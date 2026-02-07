@@ -158,6 +158,8 @@ def extract_cells(image_path, num_lines, grid_params=None, debug=False):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return None, None
+    # Upscale 2x (nearest neighbor)
+    img = cv2.resize(img, (0, 0), fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
     bg = np.median(img)
     inv = cv2.absdiff(img, int(bg))
 
