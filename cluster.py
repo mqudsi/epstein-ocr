@@ -269,6 +269,7 @@ def parse_training_file(path, line_offset):
     char_to_idx = {c: i for i, c in enumerate(ALPHABET)}
     for r_idx, line in enumerate(raw_lines):
         grid_row = r_idx + 1 + line_offset
+        line = line.ljust(EXPECTED_COLS);
         if len(line) != EXPECTED_COLS:
             raise ValueError(
                 f"Format Error in {path}: Row {grid_row} length is {len(line)}, expected {EXPECTED_COLS}."
