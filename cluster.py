@@ -317,6 +317,11 @@ def parse_training_file(path, line_offset):
                 f"Format Error in {path}: Row {grid_row} length is {len(line)}, expected {EXPECTED_COLS}."
             )
         for c_idx, char in enumerate(line):
+            # Use `#` (in training file) and `-` (internally) as placeholders for
+            # characters we're not sure about and want to skip training against.
+            if char == '#':
+                labels.append(-1)
+                continue
             if char not in char_to_idx:
                 raise ValueError(
                     f"Alphabet Error: '{char}' at ({grid_row}, {c_idx + 1}) not in ALPHABET."
@@ -461,6 +466,12 @@ def main():
         all_gt_labels = np.concatenate(gt_labels_list)
         all_gt_visuals = np.concatenate(gt_visuals_list)
         all_gt_indices = np.concatenate(gt_indices_list)
+
+        # Filter out cells marked for skipping via #/-1
+        valid_mask = all_gt_labels != -1
+        all_gt_labels = all_gt_labels[valid_mask]
+        all_gt_visuals = all_gt_visuals[valid_mask]
+        all_gt_indices = all_gt_indices[valid_mask]
 
         ground_truth_averages = calculate_bucket_averages(all_gt_visuals, all_gt_labels)
         if args.debug:

@@ -20,14 +20,16 @@ pub enum Input {
 }
 
 fn main() {
+    let top_template = "train_top.in";
+    let bot_template = "train_bot.in";
     let top_path = "train_top.txt";
     let bot_path = "train_bot.txt";
     let runner = "./try.sh";
 
     // Read original top/bottom training files
-    let top_content = fs::read_to_string(top_path)
+    let top_content = fs::read_to_string(top_template)
         .unwrap_or_else(|_| panic!("Failed to read {}", top_path));
-    let bot_content = fs::read_to_string(bot_path)
+    let bot_content = fs::read_to_string(bot_template)
         .unwrap_or_else(|_| panic!("Failed to read {}", bot_path));
 
     let mut top_chars: Vec<char> = top_content.chars().collect();
@@ -39,12 +41,12 @@ fn main() {
     // Skip the first 4 'l's, which come from English text and
     // are sure to be correct.
     for (i, &c) in top_chars.iter().enumerate().skip(4) {
-        if c == '1' || c == 'l' {
+        if c == '#' {
             slots.push((Input::TrainTop, i));
         }
     }
     for (i, &c) in bot_chars.iter().enumerate() {
-        if c == '1' || c == 'l' {
+        if c == '#' {
             slots.push((Input::TrainBot, i));
         }
     }
