@@ -134,23 +134,65 @@ def normalize_character_soft(raw_cell, h_step):
 
 def solve_grid_2d(img, gx, gy, gw, gh, num_lines):
     def score_axis(projection, n_segments, start_guess, dim_guess):
-        best_cost, best_params = float("inf"), (start_guess, dim_guess)
+        best_cost = float("inf")
+        best_params = (start_guess, dim_guess)
+
         for s_try in range(start_guess - 4, start_guess + 5):
             for d_try in range(dim_guess - 8, dim_guess + 9):
                 step = d_try / n_segments
                 gutter_ink = 0
-                for i in range(n_segments + 1):
-                    p = int(s_try + i * step)
-                    if 0 <= p < len(projection):
-                        gutter_ink += projection[p]
+                # Vectorized sum for speed and cleaner logic equivalent to original
+                # Grid lines at: s, s+step, s+2*step...
+                positions = s_try + np.arange(n_segments + 1) * step
+                indices = np.round(positions).astype(int)
+
+                # Boundary checks
+                valid = (indices >= 0) & (indices < len(projection))
+                gutter_ink = np.sum(projection[indices[valid]])
+
                 if gutter_ink < best_cost:
                     best_cost, best_params = gutter_ink, (s_try, d_try)
-        return best_params
 
+        # Linear (mostly vertical) drift cancellation
+        coarse_s, coarse_d = best_params
+        refined_cost = best_cost
+        refined_params = (float(coarse_s), float(coarse_d))
+
+        # Scan +/- 2.0 pixels in total width (adjusts step size by fractions of a pixel)
+        # Resolution 0.05px total width -> ~0.0006px per cell
+        dim_range = np.linspace(coarse_d - 2.0, coarse_d + 2.0, 41)
+
+        # Scan +/- 1.0 pixel in start position (recenters the grid)
+        start_range = np.linspace(coarse_s - 1.0, coarse_s + 1.0, 21)
+
+        for d_val in dim_range:
+            step = d_val / n_segments
+            rel_pos = np.arange(n_segments + 1) * step
+
+            for s_val in start_range:
+                positions = s_val + rel_pos
+                indices = np.round(positions).astype(int)
+
+                valid = (indices >= 0) & (indices < len(projection))
+                cost = np.sum(projection[indices[valid]])
+
+                if cost < refined_cost:
+                    refined_cost = cost
+                    refined_params = (s_val, d_val)
+
+        return refined_params
+
+    # Y-Axis (Rows)
     y_proj = np.sum(img[:, gx : gx + gw], axis=1)
     y_s, h_t = score_axis(y_proj, num_lines, gy, gh)
-    x_proj = np.sum(img[y_s : y_s + h_t, :], axis=0)
+
+    # X-Axis (Cols)
+    # We use the detected Y-range to filter the X-projection.
+    y_start_clean = max(0, int(y_s))
+    y_end_clean = min(img.shape[0], int(y_s + h_t))
+    x_proj = np.sum(img[y_start_clean:y_end_clean, :], axis=0)
     x_s, w_t = score_axis(x_proj, EXPECTED_COLS, gx, gw)
+
     return x_s, y_s, w_t, h_t
 
 
@@ -269,7 +311,7 @@ def parse_training_file(path, line_offset):
     char_to_idx = {c: i for i, c in enumerate(ALPHABET)}
     for r_idx, line in enumerate(raw_lines):
         grid_row = r_idx + 1 + line_offset
-        line = line.ljust(EXPECTED_COLS);
+        line = line.ljust(EXPECTED_COLS)
         if len(line) != EXPECTED_COLS:
             raise ValueError(
                 f"Format Error in {path}: Row {grid_row} length is {len(line)}, expected {EXPECTED_COLS}."
