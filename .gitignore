@@ -4,3 +4,4 @@ target/
 *.pdf
 grid_config.json
 weights
+EFTA*-0*.txt
