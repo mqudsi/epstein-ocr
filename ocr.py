@@ -15,7 +15,8 @@ FONT_PATH = "times.ttf"  # Update path for Linux/Mac if necessary
 FONT_SIZE = 16
 CANVAS_W, CANVAS_H = 800, 64
 DATASET_DIR = "ocr_dataset"
-MODEL_NAME = "yolo11n.pt" # Latest YOLO version
+# MODEL_NAME = "yolo11n.pt" # Latest YOLO version
+MODEL_NAME = "yolo26n.pt" # Latest YOLO version
 
 class YOLO_OCR:
     def __init__(self, model_path=None):
@@ -90,7 +91,7 @@ class YOLO_OCR:
         self.model.train(
             data=yaml_path,
             epochs=100,
-            batch=128,
+            batch=64,
             imgsz=1280,
             rect=True,
             device=self.device,
