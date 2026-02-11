@@ -53,7 +53,9 @@ class YOLO_OCR:
             hard_chars = "ijlI1t/f"
             # text_len = random.randint(10, 80)
             # random.triangular(low, high, mode)
-            text_len = int(random.triangular(10, 85, 72))
+            # text_len = int(random.triangular(10, 85, 72))
+            # text_len = int(10 + (80-10) * random.betavariate(2, 1))
+            text_len = int(80 - (random.random()**2 * 70))
 
             # 40% of the time, fill at least 30% of the slots with confusable characters
             if True and random.random() < 0.65:
