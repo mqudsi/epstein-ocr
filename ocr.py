@@ -76,6 +76,10 @@ def generate_sample(text, font, debug=False, add_noise=False):
     img = Image.new("RGB", (CANVAS_W, CANVAS_H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
 
+    # A debug copy with the bboxes drawn
+    dimg = None
+    ddraw = None
+
     # Calculate text dimensions for centering
     total_w = font.getlength(text)
     curr_x = (CANVAS_W - total_w) // 2
@@ -90,6 +94,10 @@ def generate_sample(text, font, debug=False, add_noise=False):
     # to try and mimic how real-world inputs rendered with Microsoft
     # Office's GPOS text shaping engine might look.
     draw.text((curr_x, curr_y), text, font=font, fill=(0, 0, 0))
+
+    if debug:
+        dimg = img.copy()
+        ddraw = ImageDraw.Draw(dimg)
 
     # Extract the character bounding boxes for training/val data
     labels = []
@@ -126,22 +134,23 @@ def generate_sample(text, font, debug=False, add_noise=False):
             f"{CHAR_TO_IDX[char]} {x_center:.6f} {y_center:.6f} {nw:.6f} {nh:.6f}"
         )
 
-        if debug:
-            draw.rectangle(
+        if ddraw is not None:
+            ddraw.rectangle(
                 [left - 1, top - 1, right + 1, bottom + 1],
-                outline="red",
+                # Use alternating colors so we can see which boundary is for which char
+                outline="red" if j % 2 == 0 else "green",
                 width=1,
             )
 
-    if debug:
-        img.show()
+    if dimg is not None:
+        dimg.show()
 
     # Add some synthetic noise and blur to help with jpeg detection
     if add_noise:
         radius = random.uniform(0.0, 0.2)
         img = img.filter(ImageFilter.GaussianBlur(radius))
 
-    return img, labels
+    return img, labels, dimg
 
 class YOLO_OCR:
     def __init__(self, model_path=None):
@@ -167,7 +176,7 @@ class YOLO_OCR:
         # Generate and save a single train/val image/label pair.
         def inner(i):
             text = generate_rand_text()
-            img, labels = generate_sample(text, font=worker_font)
+            img, labels, _ = generate_sample(text, font=worker_font)
 
             # Save (at slightly lower resolution when fine-tuning)
             fname = f"{split}_{i:05d}"
@@ -360,6 +369,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--train", action="store_true", help="Train the model")
     parser.add_argument("--predict", type=str, help="Path to image for inference")
+    parser.add_argument("--sample", type=str, help="Generate sample of the provided text")
     parser.add_argument(
         "--model",
         type=str,
@@ -368,6 +378,14 @@ if __name__ == "__main__":
     )
     parser.add_argument("--resume", type=str, help="Training run number to resume from")
     args = parser.parse_args()
+
+    if args.sample is not None:
+        eprint("Generating sample.png and sample-annotated.png")
+        img, _, dimg = generate_sample(args.sample, font=load_font(), debug=True)
+        img.save("sample.png")
+        if dimg is not None:
+            dimg.save("sample-annotated.png")
+        os._exit(0)
 
     # Determine which model to load
     m_path = args.model if os.path.exists(args.model) else None
