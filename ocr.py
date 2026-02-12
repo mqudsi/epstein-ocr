@@ -25,6 +25,113 @@ MODEL_NAME = "yolo26n.pt"  # Latest YOLO version
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
+def load_font():
+    try:
+        return ImageFont.truetype(FONT_PATH, FONT_SIZE)
+    except:
+        print("Font file not found. Please check FONT_PATH.")
+
+def generate_rand_text():
+    # Generate random text, oversampling tricky characters
+    hard_chars = "ijlI1t/f"
+    # text_len = random.randint(10, 80)
+    # random.triangular(low, high, mode)
+    # text_len = int(random.triangular(10, 85, 72))
+    # text_len = int(10 + (80-10) * random.betavariate(2, 1))
+    text_len = int(80 - (random.random() ** 2 * 60))
+
+    # x% of the time, generate only single characters
+    if random.random() < 0.021:
+        text_len = 1
+
+    # xx% of the time, fill at least xx% of the slots with confusable characters
+    if True and random.random() < 0.65:
+        num_hard = int(text_len * 0.3)
+        num_normal = text_len - num_hard
+
+        # Create a mixed pool and shuffle it
+        pool = random.choices(hard_chars, k=num_hard) + random.choices(
+            ALPHABET, k=num_normal
+        )
+        random.shuffle(pool)
+        text = "".join(pool)
+    else:
+        # Standard random distribution
+        text = "".join(random.choices(ALPHABET, k=text_len))
+
+    return text
+
+def generate_sample(text, font, debug=False, add_noise=False):
+    # Create base canvas
+    img = Image.new("RGB", (CANVAS_W, CANVAS_H), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+
+    # Calculate text dimensions for centering
+    total_w = font.getlength(text)
+    curr_x = (CANVAS_W - total_w) // 2
+    curr_y = (CANVAS_H - FONT_SIZE) // 2
+
+    # Introduce a slight shift to curr_y and curr_x
+    curr_y += random.randint(-8, 8)
+    if len(text) < 70:
+        curr_x -= random.randint(0, 60)
+
+    # Draw all the text at once so that kerning is properly applied,
+    # to try and mimic how real-world inputs rendered with Microsoft
+    # Office's GPOS text shaping engine might look.
+    draw.text((curr_x, curr_y), text, font=font, fill=(0, 0, 0))
+
+    # Extract the character bounding boxes for training/val data
+    labels = []
+    for j, char in enumerate(text):
+        if char.isspace():
+            continue
+
+        # Assume the position of character x is the length of the
+        # entire string up to and including x, minus the length
+        # of x itself.
+        prefix_len = font.getlength(text[: j + 1])
+        char_len = font.getlength(char)
+        char_start = curr_x + (prefix_len - char_len)
+
+        # Get character bounding box (left, top, right, bottom)
+        bbox = font.getbbox(char)
+
+        # Get absolute bbox coordinates
+        left = char_start + bbox[0]
+        top = curr_y + bbox[1]
+        right = char_start + bbox[2]
+        bottom = curr_y + bbox[3]
+
+        char_w = right - left
+        char_h = bottom - top
+
+        # Calculate normalized (relative) bounding box
+        x_center = (left + char_w / 2) / CANVAS_W
+        y_center = (top + char_h / 2) / CANVAS_H
+        nw = char_w / CANVAS_W
+        nh = char_h / CANVAS_H
+
+        labels.append(
+            f"{CHAR_TO_IDX[char]} {x_center:.6f} {y_center:.6f} {nw:.6f} {nh:.6f}"
+        )
+
+        if debug:
+            draw.rectangle(
+                [left - 1, top - 1, right + 1, bottom + 1],
+                outline="red",
+                width=1,
+            )
+
+    if debug:
+        img.show()
+
+    # Add some synthetic noise and blur to help with jpeg detection
+    if add_noise:
+        radius = random.uniform(0.0, 0.2)
+        img = img.filter(ImageFilter.GaussianBlur(radius))
+
+    return img, labels
 
 class YOLO_OCR:
     def __init__(self, model_path=None):
@@ -46,115 +153,15 @@ class YOLO_OCR:
         os.makedirs(img_dir, exist_ok=True)
         os.makedirs(lbl_dir, exist_ok=True)
 
-        try:
-            font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
-        except:
-            print("Font file not found. Please check FONT_PATH.")
-            return
+        font = load_font()
 
-        debug = False
         for i in range(count):
-            # Create base canvas
-            img = Image.new("RGB", (CANVAS_W, CANVAS_H), (255, 255, 255))
-            draw = ImageDraw.Draw(img)
-
-            # Generate random text, oversampling tricky characters
-            hard_chars = "ijlI1t/f"
-            # text_len = random.randint(10, 80)
-            # random.triangular(low, high, mode)
-            # text_len = int(random.triangular(10, 85, 72))
-            # text_len = int(10 + (80-10) * random.betavariate(2, 1))
-            text_len = int(80 - (random.random() ** 2 * 60))
-
-            # 1% of the time, generate only single characters
-            if random.random() < 0.021:
-                text_len = 1
-
-            # 40% of the time, fill at least 30% of the slots with confusable characters
-            if True and random.random() < 0.65:
-                num_hard = int(text_len * 0.3)
-                num_normal = text_len - num_hard
-
-                # Create a mixed pool and shuffle it
-                pool = random.choices(hard_chars, k=num_hard) + random.choices(
-                    ALPHABET, k=num_normal
-                )
-                random.shuffle(pool)
-                text = "".join(pool)
-            else:
-                # Standard random distribution
-                text = "".join(random.choices(ALPHABET, k=text_len))
-
-            # Calculate text dimensions for centering
-            total_w = font.getlength(text)
-            curr_x = (CANVAS_W - total_w) // 2
-            curr_y = (CANVAS_H - FONT_SIZE) // 2
-
-            # Introduce a slight shift to curr_y and curr_x
-            curr_y += random.randint(-8, 8)
-            if text_len < 70:
-                curr_x -= random.randint(0, 60)
-
-            labels = []
-
-            # Draw all the text at once so that kerning is properly applied,
-            # to try and mimic how real-world inputs rendered with Microsoft
-            # Office's GPOS text shaping engine might look.
-            draw.text((curr_x, curr_y), text, font=font, fill=(0, 0, 0))
-
-            # Extract the character bounding boxes for training/val data
-            for j, char in enumerate(text):
-                if char.isspace():
-                    continue
-
-                # Assume the position of character x is the length of the
-                # entire string up to and including x, minus the length
-                # of x itself.
-                prefix_len = font.getlength(text[: j + 1])
-                char_len = font.getlength(char)
-                char_start = curr_x + (prefix_len - char_len)
-
-                # Get character bounding box (left, top, right, bottom)
-                bbox = font.getbbox(char)
-
-                # Get absolute bbox coordinates
-                left = char_start + bbox[0]
-                top = curr_y + bbox[1]
-                right = char_start + bbox[2]
-                bottom = curr_y + bbox[3]
-
-                char_w = right - left
-                char_h = bottom - top
-
-                # Calculate normalized (relative) bounding box
-                x_center = (left + char_w / 2) / CANVAS_W
-                y_center = (top + char_h / 2) / CANVAS_H
-                nw = char_w / CANVAS_W
-                nh = char_h / CANVAS_H
-                labels.append(
-                    f"{CHAR_TO_IDX[char]} {x_center:.6f} {y_center:.6f} {nw:.6f} {nh:.6f}"
-                )
-
-                if debug:
-                    draw.rectangle(
-                        [left - 1, top - 1, right + 1, bottom + 1],
-                        outline="red",
-                        width=1,
-                    )
-
-            if debug:
-                # Show bounding boxes on line
-                img.show()
-                sys.exit()
-
-            # Add some synthetic noise and blur to help with jpeg detection
-            # if self.fine_tune:
-            #     radius = random.uniform(0.0, 0.2)
-            #     img = img.filter(ImageFilter.GaussianBlur(radius))
+            text = generate_rand_text()
+            img, labels = generate_sample(text, font)
 
             # Save (at slightly lower resolution when fine-tuning)
-            name = f"{split}_{i:05d}"
-            img_path = os.path.join(img_dir, f"{name}.jpg")
+            fname = f"{split}_{i:05d}"
+            img_path = os.path.join(img_dir, f"{fname}.jpg")
 
             if not self.fine_tune:
                 # default quality is 75!?
@@ -162,7 +169,7 @@ class YOLO_OCR:
             else:
                 img.save(img_path, "JPEG", quality=random.randint(85, 95))
 
-            with open(os.path.join(lbl_dir, f"{name}.txt"), "w") as f:
+            with open(os.path.join(lbl_dir, f"{fname}.txt"), "w") as f:
                 f.write("\n".join(labels))
 
     # --- PART 2: TRAINING ---
