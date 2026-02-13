@@ -5,3 +5,9 @@ target/
 grid_config.json
 weights
 EFTA*-0*.txt
+/.venv/*
+/*.pt
+/sample*.png
+/sample*.jp*g
+ocr_dataset/
+runs/
