@@ -17,9 +17,7 @@ ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
 CHAR_TO_IDX = {char: i for i, char in enumerate(ALPHABET)}
 IDX_TO_CHAR = {i: char for char, i in CHAR_TO_IDX.items()}
 
-# FONT_PATH = "times.ttf"  # Update path for Linux/Mac if necessary
-# FONT_PATH = "./NimbusRomNo9L-Reg.otf"
-# FONT_PATH = "./texgyretermes-regular.otf"
+# FONT_PATH = "times.ttf"
 FONT_PATHS = [
     "times.ttf",
     "./fonts/NimbusRomNo9L-Reg.otf",
