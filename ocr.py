@@ -61,7 +61,8 @@ def init_gen_worker():
 
 def generate_rand_text():
     # Generate random text, oversampling tricky characters
-    hard_chars = "ijlI1t/f"
+    # hard_chars = "ijlI1t/fr"
+    hard_chars = "jlI1t/r"
     # text_len = random.randint(10, 80)
     # random.triangular(low, high, mode)
     # text_len = int(random.triangular(10, 85, 72))
@@ -69,12 +70,12 @@ def generate_rand_text():
     text_len = int(80 - (random.random() ** 2 * 60))
 
     # x% of the time, generate only single characters
-    if random.random() < 0.021:
+    if random.random() < 0.03:
         text_len = 1
 
     # xx% of the time, fill at least xx% of the slots with confusable characters
-    if True and random.random() < 0.65:
-        num_hard = int(text_len * 0.3)
+    if True and random.random() < 0.85:
+        num_hard = int(text_len * 0.35)
         num_normal = text_len - num_hard
 
         # Create a mixed pool and shuffle it
