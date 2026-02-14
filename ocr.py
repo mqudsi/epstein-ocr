@@ -112,7 +112,11 @@ def generate_sample(text, font, debug=False, add_noise=False):
     # Draw all the text at once so that kerning is properly applied,
     # to try and mimic how real-world inputs rendered with Microsoft
     # Office's GPOS text shaping engine might look.
-    draw.text((curr_x, curr_y), text, font=font, fill=(0, 0, 0))
+
+    # Try to vary the opacity slightly to be more resilient to variations
+    # in input.
+    v = random.randint(0, 100)
+    draw.text((curr_x, curr_y), text, font=font, fill=(v, v, v))
 
     if debug:
         dimg = img.copy()
