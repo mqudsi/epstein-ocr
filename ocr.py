@@ -324,7 +324,7 @@ class YOLO_OCR:
             img_path = os.path.join(img_dir, f"{fname}.jpg")
             lbl_path = os.path.join(lbl_dir, f"{fname}.txt")
 
-            if not is_fine_tune:
+            if True or not is_fine_tune:
                 # default quality is 75!?
                 img.save(img_path, "JPEG", quality=95)
             else:
