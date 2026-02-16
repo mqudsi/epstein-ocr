@@ -1,0 +1,48 @@
+# Ultralytics YOLO26-OCR-S
+# Optimized for 800x64 without DCT/compression artifacts
+# Truncated Backbone (No P5) -> Single Head (P2)
+
+# Parameters
+nc: 65
+end2end: True
+reg_max: 16
+scale: 's'
+
+scales:
+  s: [0.50, 0.50, 1024]
+
+backbone:
+  # [from, repeats, module, args]
+
+  # --- Standard YOLO Backbone (Layers 0-6 Only) ---
+  # We cut off before the Stride 32 downsampling.
+  - [-1, 1, Conv, [64, 3, 2]]   # 0-P1/2
+  - [-1, 1, Conv, [128, 3, 2]]  # 1-P2/4
+  - [-1, 2, C3k2, [256, False, 0.25]] # 2
+  - [-1, 1, Conv, [256, 3, 2]]  # 3-P3/8
+  - [-1, 2, C3k2, [512, False, 0.25]] # 4
+  - [-1, 1, Conv, [512, 3, 2]]  # 5-P4/16 (Max Depth)
+  - [-1, 2, C3k2, [512, True]]  # 6
+
+  # --- Context Block at P4 ---
+  # Replaces the P5 context. SPPF here expands Receptive Field
+  # enough to see the whole character/line structure.
+  - [-1, 1, SPPF, [512, 5]]     # 7 (Context)
+
+head:
+  # --- Upsample P4 to P3 ---
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]] # 8
+  - [[-1, 4], 1, Concat, [1]] # 9 (Cat Backbone P3)
+  - [-1, 2, C3k2, [256, False]] # 10
+
+  # --- Upsample P3 to P2 ---
+  # This brings the context of P4 down to the resolution of P2.
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]] # 11
+  - [[-1, 1], 1, Concat, [1]] # 12 (Cat Backbone P2)
+  - [-1, 2, C3k2, [128, False]] # 13 (Output Feature Map: Stride 4)
+
+  # --- Detect Head ---
+  # Single Head detection at Stride 4.
+  # Clean inputs don't need multi-scale (P3/P4) detection.
+  # We force the model to be pixel-perfect.
+  - [[13], 1, Detect, [nc]]

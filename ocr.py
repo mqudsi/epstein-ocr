@@ -29,7 +29,8 @@ CANVAS_W, CANVAS_H = 800, 64
 DATASET_DIR = "ocr_dataset"
 # YOLO_MODEL = "yolo11n.pt"
 # YOLO_MODEL = "yolo26n.pt"
-YOLO_MODEL = "./yolo26_ocr_n.yaml"
+YOLO_MODEL = "./yolo26_ocr_s.yaml"
+YOLO_BASE = "yolo26s.pt"
 MODEL_IMGSZ = 800
 
 # The shared font resource for each multiprocess worker when generating
@@ -86,8 +87,8 @@ def init_gen_worker():
 
 def generate_rand_text():
     # Generate random text, oversampling tricky characters
-    # hard_chars = "ijlI1t/fr"
-    hard_chars = "ijlI1t/r"
+    hard_chars = "ijlI1t/frs"
+    # hard_chars = "ijlI1t/r"
     # text_len = random.randint(10, 80)
     # random.triangular(low, high, mode)
     # text_len = int(random.triangular(10, 85, 72))
@@ -99,7 +100,7 @@ def generate_rand_text():
         text_len = 1
 
     # xx% of the time, fill at least xx% of the slots with confusable characters
-    if True and random.random() < 0.85:
+    if True and random.random() < 0.65:
         num_hard = int(text_len * 0.35)
         num_normal = text_len - num_hard
 
@@ -307,12 +308,12 @@ class YOLO_OCR:
             self.model = YOLO(YOLO_MODEL)
             if YOLO_MODEL.startswith("./"):
                 # Load starting point weights. May warn about head mismatch.
-                if os.path.exists("./runs/detect/train42/weights/best.pt"):
+                if False and os.path.exists("./runs/detect/train42/weights/best.pt"):
                     eprint("Initializing with previous training run weights")
                     self.model.load("./runs/detect/train42/weights/best.pt")
                 else:
                     eprint("Initializing with default weights")
-                    self.model.load("yolo26n.pt")
+                    self.model.load(YOLO_BASE)
             self.fine_tune = False
 
     # --- PART 1: DATA GENERATION ---
@@ -364,7 +365,8 @@ class YOLO_OCR:
             "device": self.device,
             "data": yaml_path,
             "epochs": 100,
-            "batch": 48,
+            "cos_lr": True,
+            "batch": 76,
             "imgsz": MODEL_IMGSZ,
             "rect": True,
             "mosaic": 0.0,
