@@ -305,6 +305,14 @@ class YOLO_OCR:
             self.fine_tune = True
         else:
             self.model = YOLO(YOLO_MODEL)
+            if YOLO_MODEL.startswith("./"):
+                # Load starting point weights. May warn about head mismatch.
+                if os.path.exists("./runs/detect/train42/weights/best.pt"):
+                    eprint("Initializing with previous training run weights")
+                    self.model.load("./runs/detect/train42/weights/best.pt")
+                else:
+                    eprint("Initializing with default weights")
+                    self.model.load("yolo26n.pt")
             self.fine_tune = False
 
     # --- PART 1: DATA GENERATION ---
