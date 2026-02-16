@@ -1,0 +1,57 @@
+# Ultralytics YOLO26-OCR
+# Input: 800x64
+# Outputs: P1 (stride 2) and P2 (stride 4)
+
+# Parameters
+nc: 65
+end2end: True
+# Raise from 1 for sub-pixel character spacing
+reg_max: 16
+scale: 'n'
+
+# Try upgrading from nano to small
+scales:
+  # [depth, width, max_channels]
+  n: [0.50, 0.25, 1024]
+
+backbone:
+  # [from, repeats, module, args]
+
+  # --- P1 Stage (Stride 2) ---
+  # Resolution: 400x32
+  - [-1, 1, Conv, [64, 3, 2]]   # 0-P1/2
+
+  # --- P2 Stage (Stride 4) ---
+  # Resolution: 200x16
+  - [-1, 1, Conv, [128, 3, 2]]  # 1-P2/4
+  - [-1, 2, C3k2, [128, False]] # 2
+
+  # --- P3 Stage (Stride 8) ---
+  # Resolution: 100x8
+  - [-1, 1, Conv, [256, 3, 2]]  # 3-P3/8
+  - [-1, 2, C3k2, [256, False]] # 4
+
+  # Context block (SPPF is lighter than C2PSA)
+  # - [-1, 1, C2PSA, [256]]    # 5
+  - [-1, 1, SPPF, [256, 5]]    # 5
+
+  # Removed P4 and P5 as they would zoom out to the point of being useless.
+
+head:
+  # --- Upsample P3 to P2 ---
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]] # 6
+  - [[-1, 2], 1, Concat, [1]]   # 7 (Cat Backbone P2 + Attention)
+  - [-1, 2, C3k2, [128, False]] # 8 (Output P2 - high-res precision)
+
+  # --- Downsample P2 to P3 (bi-directional fusion) ---
+  # Can be removed, but helps stability
+  - [-1, 1, Conv, [128, 3, 2]]  # 9
+  - [[-1, 5], 1, Concat, [1]]   # 10 (Cat Backbone P3)
+  - [-1, 2, C3k2, [256, False]] # 11 (Output P3 - low-res context)
+
+  # --- Detect Head ---
+  # Detects on P2 (Stride 4) and P3 (Stride 8)
+  # Resolution at 800px input:
+  # P2: 200 grid cells wide (16px vertical resolution)
+  # P3: 100 grid cells wide (8px vertical resolution)
+  - [[8, 11], 1, Detect, [nc]]

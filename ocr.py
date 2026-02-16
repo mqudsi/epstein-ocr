@@ -27,8 +27,10 @@ FONT_PATHS = [
 FONT_SIZE = 16
 CANVAS_W, CANVAS_H = 800, 64
 DATASET_DIR = "ocr_dataset"
-# MODEL_NAME = "yolo11n.pt" # Latest YOLO version
-MODEL_NAME = "yolo26n.pt"  # Latest YOLO version
+# YOLO_MODEL = "yolo11n.pt"
+# YOLO_MODEL = "yolo26n.pt"
+YOLO_MODEL = "./yolo26_ocr_n.yaml"
+MODEL_IMGSZ = 800
 
 # The shared font resource for each multiprocess worker when generating
 # training and validation data.
@@ -302,7 +304,7 @@ class YOLO_OCR:
             self.model = YOLO(model_path)
             self.fine_tune = True
         else:
-            self.model = YOLO(MODEL_NAME)
+            self.model = YOLO(YOLO_MODEL)
             self.fine_tune = False
 
     # --- PART 1: DATA GENERATION ---
@@ -355,7 +357,7 @@ class YOLO_OCR:
             "data": yaml_path,
             "epochs": 100,
             "batch": 48,
-            "imgsz": 1600,
+            "imgsz": MODEL_IMGSZ,
             "rect": True,
             "mosaic": 0.0,
             "close_mosaic": 0,
@@ -447,7 +449,7 @@ class YOLO_OCR:
             # Predict, returing even low confidence items
             results = self.model.predict(
                 canvas_bgr,
-                imgsz=1600,
+                imgsz=MODEL_IMGSZ,
                 conf=0.05,
                 verbose=False,
                 end2end=False,
