@@ -89,8 +89,9 @@ def init_gen_worker():
 
 def generate_rand_text():
     # Generate random text, oversampling tricky characters
-    hard_chars = "ijlI1t/frs"
+    # hard_chars = "ijlI1t/frs"
     # hard_chars = "ijlI1t/r"
+    hard_chars = "ijlI1t/frsJ"
     # text_len = random.randint(10, 80)
     # random.triangular(low, high, mode)
     # text_len = int(random.triangular(10, 85, 72))
