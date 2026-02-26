@@ -38,6 +38,8 @@ MODEL_IMGSZ = 800
 worker_font_pil = None
 worker_font_skia = None
 
+sys.stdout.reconfigure(newline='\n')
+
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
