@@ -75,7 +75,7 @@ def init_gen_worker():
         if worker_font_pil is None:
             raise ValueError("PIL font failed to load")
 
-        worker_font_skia = load_font_skia(randomize=True)
+        worker_font_skia = load_font_skia(randomize=False)
         if worker_font_skia is None:
             raise ValueError("skia font failed to load")
 
