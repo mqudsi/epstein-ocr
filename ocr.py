@@ -331,7 +331,7 @@ class YOLO_OCR:
         # Generate and save a single train/val image/label pair.
         def inner(i):
             text = generate_rand_text()
-            img, labels, _ = generate_sample_skia(text, font=worker_font_skia) if random.random() < 0.50 else generate_sample_pil(text, font=worker_font_pil)
+            img, labels, _ = generate_sample_skia(text, font=worker_font_skia) if random.random() < 0.75 else generate_sample_pil(text, font=worker_font_pil)
 
             # Save (at slightly lower resolution when fine-tuning)
             fname = f"{split}_{i:05d}"
