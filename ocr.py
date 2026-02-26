@@ -389,8 +389,14 @@ class YOLO_OCR:
         fine_tune_args = (
             {
                 "epochs": 50,  # or 30
+                "optimizer": "AdamW",
+                "lr0": 0.001,
                 "warmup_epochs": 0,
                 "pretrained": True,
+                "box": 7.5, # from default of 7.5
+                "cls": 0.6, # from default of 0.5
+                "dfl": 1.75, # from default of 1.5
+                "overlap_mask": False,
             }
             if self.fine_tune
             else {}
