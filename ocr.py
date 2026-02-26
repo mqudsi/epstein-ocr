@@ -475,6 +475,10 @@ class YOLO_OCR:
                 iou=0.1,
             )
 
+            if len(results[0].boxes) == 0:
+                # print("\n")
+                continue;
+
             # # This creates a BGR image with boxes and labels drawn on it
             # annotated_frame = results[0].plot()
             #
@@ -507,7 +511,7 @@ class YOLO_OCR:
                 prev = filtered[-1]
 
                 # Check if this box overlaps significantly with the previous
-                if current["x"] - prev["x"] < 3.5:
+                if current["x"] - prev["x"] < 3:
                     # Replace the last one if the current is more confident
                     if current["conf"] > prev["conf"]:
                         filtered[-1] = current
