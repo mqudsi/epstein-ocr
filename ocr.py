@@ -565,7 +565,6 @@ def parse_args():
         "--generate", action="store_true", help="Generate synthetic data"
     )
     parser.add_argument("--train", action="store_true", help="Train the model")
-    parser.add_argument("--predict", type=str, help="Path to image for inference")
     parser.add_argument(
         "--sample", type=str, help="Generate sample of the provided text"
     )
@@ -576,13 +575,21 @@ def parse_args():
         help="Path to weights",
     )
     parser.add_argument("--resume", type=str, help="Training run number to resume from")
+
+    parser.add_argument("--predict", action="store_true", help="Predict output of files specified")
+    parser.add_argument(
+        "files",
+        nargs="*",
+        help="One or more image files to predict (used with --predict)"
+    )
+
     args = parser.parse_args()
+
+    if args.resume is not None:
+        args.model = f"runs/detect/train{args.resume}/weights/best.pt"
 
     if args.model and not os.path.exists(args.model):
         raise Exception("model not found!")
-
-    if args.model is None and args.resume is not None:
-        args.model = f"runs/detect/train{args.resume}/weights/best.pt"
 
     return args
 
@@ -609,6 +616,13 @@ if __name__ == "__main__":
         ocr.train()
 
     elif args.predict:
-        result = ocr.process_document(args.predict)
+        if not args.files:
+            print("Error: --predict mode enabled but no files provided.")
+            os._exit(1)
+
         eprint("\n--- OCR RESULTS ---\n")
-        print(result)
+        for file_path in args.files:
+            eprint(f"Processing: {file_path}")
+            result = ocr.process_document(file_path)
+            print(result)
+            eprint("-" * 20)
