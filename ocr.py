@@ -527,10 +527,10 @@ class YOLO_OCR:
                 )
 
             raw_boxes.sort(key=lambda b: b["x"])
-            eprint(json.dumps(raw_boxes, indent=4))
+            # eprint(json.dumps(raw_boxes, indent=4))
 
             line_str = "".join([b["char"] for b in raw_boxes])
-            eprint(f"Original line {i}: {line_str}")
+            # eprint(f"Original line {i}: {line_str}")
 
             # Now try to filter out bad overlaps. We know characters never truly overlap,
             # so if two characters are located in roughly the same position, only take
@@ -550,8 +550,11 @@ class YOLO_OCR:
                     filtered.append(current)
 
             line_str = "".join([b["char"] for b in filtered])
-            eprint(f"Filtered line {i}: {line_str}")
+            # eprint(f"Filtered line {i}: {line_str}")
             full_text.append(line_str)
+
+            # if i == 15:
+            #     break
 
         return "\n".join(full_text)
 
