@@ -31,7 +31,9 @@ DATASET_DIR = "ocr_dataset"
 # YOLO_MODEL = "yolo26n.pt"
 YOLO_MODEL = "./yolo26_ocr_s.yaml"
 YOLO_BASE = "yolo26s.pt"
-MODEL_IMGSZ = 800
+# MODEL_IMGSZ = 800
+# MODEL_IMGSZ = 1600
+MODEL_IMGSZ = 2400
 
 # The shared font resource for each multiprocess worker when generating
 # training and validation data.
@@ -311,7 +313,7 @@ class YOLO_OCR:
             self.model = YOLO(YOLO_MODEL)
             if YOLO_MODEL.startswith("./"):
                 # Load starting point weights. May warn about head mismatch.
-                if False and os.path.exists("./runs/detect/train42/weights/best.pt"):
+                if True and os.path.exists("./runs/detect/train58/weights/best.pt"):
                     eprint("Initializing with previous training run weights")
                     self.model.load("./runs/detect/train42/weights/best.pt")
                 else:
@@ -526,10 +528,7 @@ class YOLO_OCR:
 
         return "\n".join(full_text)
 
-
-if __name__ == "__main__":
-    import random
-
+def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--generate", action="store_true", help="Generate synthetic data"
@@ -546,6 +545,17 @@ if __name__ == "__main__":
     parser.add_argument("--resume", type=str, help="Training run number to resume from")
     args = parser.parse_args()
 
+    if args.model and not os.path.exists(args.model):
+        raise Exception("model not found!")
+
+    if args.model is None and args.resume is not None:
+        args.model = f"runs/detect/train{args.resume}/weights/best.pt"
+
+    return args
+
+if __name__ == "__main__":
+    args = parse_args()
+
     if args.sample is not None:
         eprint("Generating sample.png and sample-annotated.png")
         img, _, dimg = generate_sample_skia(args.sample, debug=True)
@@ -555,19 +565,16 @@ if __name__ == "__main__":
         os._exit(0)
 
     # Determine which model to load
-    m_path = args.model if os.path.exists(args.model) else None
-    if m_path is None and args.resume is not None:
-        m_path = f"runs/detect/train{args.resume}/weights/best.pt"
-    ocr = YOLO_OCR(m_path)
+    ocr = YOLO_OCR(args.model)
 
     if args.generate:
         ocr.generate_data(count=5000, split="train")
         ocr.generate_data(count=1000, split="val")
 
-    if args.train:
+    elif args.train:
         ocr.train()
 
-    if args.predict:
+    elif args.predict:
         result = ocr.process_document(args.predict)
         eprint("\n--- OCR RESULTS ---\n")
         print(result)
