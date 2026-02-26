@@ -103,8 +103,8 @@ def generate_rand_text():
         text_len = 1
 
     # xx% of the time, fill at least xx% of the slots with confusable characters
-    if True and random.random() < 0.65:
-        num_hard = int(text_len * 0.35)
+    if True and random.random() < 0.55:
+        num_hard = int(text_len * 0.75)
         num_normal = text_len - num_hard
 
         # Create a mixed pool and shuffle it
