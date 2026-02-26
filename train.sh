@@ -6,4 +6,4 @@ else
     UV="uv"
 fi
 
-$UV run cluster.py ../EFTA00400459-001.png ./train_top.txt ./train_bot.txt -d -q
+$UV run monospace.py ../EFTA00400459-001.png ./train_top.txt ./train_bot.txt -d -q

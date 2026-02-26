@@ -7,10 +7,10 @@ end
 
 if true
 # Train with this permutation of 1/l training data
-uv.exe run cluster.py ../EFTA00382108-002.png ./train_top.txt ./train_bot.txt -q -d
+uv.exe run monospace.py ../EFTA00382108-002.png ./train_top.txt ./train_bot.txt -q -d
 
 # Generate outputs according to what we just trained
-parallel -j 16 uv.exe run cluster.py ../EFTA00382108-{}.png -o EFTA00382108-{}.txt ::: (printf "%03d\n" (seq 2 23))
+parallel -j 16 uv.exe run monospace.py ../EFTA00382108-{}.png -o EFTA00382108-{}.txt ::: (printf "%03d\n" (seq 2 23))
 
 # Remove non-base64 characters from the top of page 2
 tail -n +7 < EFTA00382108-002.txt | rewrite EFTA00382108-002.txt
