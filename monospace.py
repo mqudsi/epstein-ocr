@@ -1,16 +1,7 @@
 #!/usr/bin/env -S uv.exe run
 
-import cv2
-import numpy as np
 import sys
 import os
-import torch
-import torch.nn as nn
-import torch.nn.functional as tf
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
 import random
 import argparse
 import json
@@ -20,6 +11,9 @@ sys.stdout.reconfigure(newline="\n")
 
 # --- DETERMINISM ---
 def set_seed(seed=42):
+    import numpy as np
+    import torch
+
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
@@ -43,60 +37,69 @@ def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
-class SimpleCNN(nn.Module):
-    def __init__(self, num_classes):
-        super(SimpleCNN, self).__init__()
-        # Input is 1 (gray) + 2 (coords) = 3 channels
-        self.conv = nn.Sequential(
-            nn.Conv2d(3, 48, kernel_size=3, padding=1),
-            nn.BatchNorm2d(48),
-            nn.ReLU(),
-            nn.Conv2d(48, 48, kernel_size=3, padding=1),
-            nn.BatchNorm2d(48),
-            nn.ReLU(),
-            nn.MaxPool2d(2),  # 16x16
-            nn.Conv2d(48, 96, kernel_size=3, padding=1),
-            nn.BatchNorm2d(96),
-            nn.ReLU(),
-            nn.MaxPool2d(2),  # 8x8
-            nn.Conv2d(96, 192, kernel_size=3, padding=1),
-            nn.BatchNorm2d(192),
-            nn.ReLU(),
-            # We stop pooling here to keep an 8x8 grid for high-detail spatial features
-        )
+def get_cnn_class():
+    import torch
+    import torch.nn as nn
 
-        self.fc = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(192 * 8 * 8, 512),
-            nn.ReLU(),
-            nn.Dropout(0.2),  # Generalizes better
-            nn.Linear(512, num_classes),
-        )
+    class SimpleCNN(nn.Module):
+        def __init__(self, num_classes):
+            super(SimpleCNN, self).__init__()
+            # Input is 1 (gray) + 2 (coords) = 3 channels
+            self.conv = nn.Sequential(
+                nn.Conv2d(3, 48, kernel_size=3, padding=1),
+                nn.BatchNorm2d(48),
+                nn.ReLU(),
+                nn.Conv2d(48, 48, kernel_size=3, padding=1),
+                nn.BatchNorm2d(48),
+                nn.ReLU(),
+                nn.MaxPool2d(2),  # 16x16
+                nn.Conv2d(48, 96, kernel_size=3, padding=1),
+                nn.BatchNorm2d(96),
+                nn.ReLU(),
+                nn.MaxPool2d(2),  # 8x8
+                nn.Conv2d(96, 192, kernel_size=3, padding=1),
+                nn.BatchNorm2d(192),
+                nn.ReLU(),
+                # We stop pooling here to keep an 8x8 grid for high-detail spatial features
+            )
 
-    def add_coords(self, x):
-        # Generates X and Y coordinate maps from -1 to 1
-        bs, _, h, w = x.size()
-        xx = (
-            torch.linspace(-1, 1, w, device=x.device)
-            .view(1, 1, 1, w)
-            .expand(bs, 1, h, w)
-        )
-        yy = (
-            torch.linspace(-1, 1, h, device=x.device)
-            .view(1, 1, h, 1)
-            .expand(bs, 1, h, w)
-        )
-        return torch.cat([x, xx, yy], dim=1)
+            self.fc = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(192 * 8 * 8, 512),
+                nn.ReLU(),
+                nn.Dropout(0.2),  # Generalizes better
+                nn.Linear(512, num_classes),
+            )
 
-    def forward(self, x):
-        x = self.add_coords(x)
-        return self.fc(self.conv(x))
+        def add_coords(self, x):
+            # Generates X and Y coordinate maps from -1 to 1
+            bs, _, h, w = x.size()
+            xx = (
+                torch.linspace(-1, 1, w, device=x.device)
+                .view(1, 1, 1, w)
+                .expand(bs, 1, h, w)
+            )
+            yy = (
+                torch.linspace(-1, 1, h, device=x.device)
+                .view(1, 1, h, 1)
+                .expand(bs, 1, h, w)
+            )
+            return torch.cat([x, xx, yy], dim=1)
+
+        def forward(self, x):
+            x = self.add_coords(x)
+            return self.fc(self.conv(x))
+
+    return SimpleCNN
 
 
 # Here the pixels have been inverted (white text on black background)
 # This means that thresholding is already inverted! Lower values are
 # WHITE not BLACK.
 def normalize_character_soft(raw_cell, h_step):
+    import cv2
+    import numpy as np
+
     if raw_cell.size == 0:
         return np.zeros(TARGET_CELL_SIZE, dtype=np.uint8)
 
@@ -158,6 +161,8 @@ def normalize_character_soft(raw_cell, h_step):
 
 
 def solve_grid_2d(img, gx, gy, gw, gh, num_lines):
+    import numpy as np
+
     def score_axis(projection, n_segments, start_guess, dim_guess):
         best_cost = float("inf")
         best_params = (start_guess, dim_guess)
@@ -222,6 +227,9 @@ def solve_grid_2d(img, gx, gy, gw, gh, num_lines):
 
 
 def extract_cells(image_path, num_lines, grid_params=None, debug=False):
+    import cv2
+    import numpy as np
+
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return None, None
@@ -245,6 +253,8 @@ def extract_cells(image_path, num_lines, grid_params=None, debug=False):
     w_step, h_step = wt / EXPECTED_COLS, ht / num_lines
 
     if debug:
+        import matplotlib.pyplot as plt
+
         # Pad image slightly so labels are always visible
         pad = 40
         dbg_base = cv2.copyMakeBorder(
@@ -325,6 +335,8 @@ def extract_cells(image_path, num_lines, grid_params=None, debug=False):
 
 
 def parse_training_file(path, line_offset):
+    import numpy as np
+
     if not os.path.exists(path):
         raise FileNotFoundError(f"Training file not found: {path}")
     with open(path, "r", encoding="utf-8") as f:
@@ -356,6 +368,8 @@ def parse_training_file(path, line_offset):
 
 
 def calculate_bucket_averages(visuals, labels):
+    import numpy as np
+
     averages = np.zeros((CLUSTERS, 32, 32), dtype=np.uint8)
     for i in range(CLUSTERS):
         mask = labels == i
@@ -373,6 +387,9 @@ def show_outliers(
     save_path=None,
     indices_map=None,
 ):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
     n_cols = 11
     n_rows = (CLUSTERS + n_cols - 1) // n_cols
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(18, n_rows * 1.83))
@@ -423,163 +440,132 @@ def show_outliers(
     return overall_max_mse
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("image", help="Path to input image")
-    parser.add_argument(
-        "train_path", nargs="?", default=None, help="Top N lines of ground truth"
-    )
-    parser.add_argument(
-        "bottom_train_path",
-        nargs="?",
-        default=None,
-        help="Optional: Bottom N lines of ground truth",
-    )
-    parser.add_argument("-d", "--debug", action="store_true")
-    parser.add_argument("-q", "--quiet", action="store_true")
-    parser.add_argument("-o", "--output", help="Path to write output instead of stdout")
-    parser.add_argument(
-        "--lines", type=int, default=65, help="Total grid lines in image"
-    )
-    args = parser.parse_args()
+def run_training(args, visuals, detected_params, device):
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as tf
+    import torch.optim as optim
+    from torch.utils.data import DataLoader, TensorDataset
+    from sklearn.model_selection import train_test_split
+    import numpy as np
 
-    log(f"Input: {args.image}")
-    if args.output:
-        log(f"Output: {args.output}")
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    SimpleCNN = get_cnn_class()
     model = SimpleCNN(CLUSTERS).to(device)
 
-    # Determine if we should load a memorized grid
-    grid_params = None
-    if not args.train_path and os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r") as f:
-                cfg = json.load(f)
-                grid_params = (cfg["xs"], cfg["ys"], cfg["wt"], cfg["ht"])
-                log("Loaded grid configuration from file.")
-        except Exception as e:
-            log(f"Warning: Could not load config: {e}. Re-detecting grid.")
+    # --- TRAINING MODE ---
+    gt_labels_list = []
+    gt_visuals_list = []
+    gt_indices_list = []
 
-    # Suppress grid debug view if in inference mode with an output path
-    grid_debug = args.debug and not (not args.train_path and args.output)
-    visuals, detected_params = extract_cells(
-        args.image, args.lines, grid_params=grid_params, debug=grid_debug
+    labels_top, n_lines_top = parse_training_file(args.train_path, 0)
+    gt_labels_list.append(labels_top)
+    gt_visuals_list.append(visuals[: n_lines_top * EXPECTED_COLS])
+    gt_indices_list.append(np.arange(0, n_lines_top * EXPECTED_COLS))
+    log(f"Loaded {n_lines_top} lines from top training file.")
+
+    if args.bottom_train_path:
+        with open(args.bottom_train_path, "r", encoding="utf-8") as f:
+            n_lines_bot = len([l for l in f.read().splitlines() if l.strip()])
+
+        offset = args.lines - n_lines_bot
+        labels_bot, _ = parse_training_file(args.bottom_train_path, offset)
+        gt_labels_list.append(labels_bot)
+        gt_visuals_list.append(
+            visuals[offset * EXPECTED_COLS : (offset + n_lines_bot) * EXPECTED_COLS]
+        )
+        gt_indices_list.append(
+            np.arange(offset * EXPECTED_COLS, (offset + n_lines_bot) * EXPECTED_COLS)
+        )
+        log(f"Loaded {n_lines_bot} lines from bottom training file.")
+
+    all_gt_labels = np.concatenate(gt_labels_list)
+    all_gt_visuals = np.concatenate(gt_visuals_list)
+    all_gt_indices = np.concatenate(gt_indices_list)
+
+    # Filter out cells marked for skipping via #/-1
+    valid_mask = all_gt_labels != -1
+    all_gt_labels = all_gt_labels[valid_mask]
+    all_gt_visuals = all_gt_visuals[valid_mask]
+    all_gt_indices = all_gt_indices[valid_mask]
+
+    ground_truth_averages = calculate_bucket_averages(all_gt_visuals, all_gt_labels)
+    if args.debug:
+        max_dev = show_outliers(
+            all_gt_visuals,
+            all_gt_labels,
+            ground_truth_averages,
+            "TRAINING TYPO CHECK: Avg vs Max Outlier",
+            indices_map=all_gt_indices,
+        )
+        log(f"Max bucket deviation: {max_dev:.2f}")
+
+    X = torch.tensor(all_gt_visuals, dtype=torch.float32).unsqueeze(1) / 255.0
+    Y = torch.tensor(all_gt_labels, dtype=torch.long)
+    train_idx, _ = train_test_split(np.arange(len(Y)), test_size=0.1, random_state=42)
+    train_loader = DataLoader(
+        TensorDataset(X[train_idx], Y[train_idx]), batch_size=64, shuffle=True
     )
-    if visuals is None:
+
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.2)
+    criterion = nn.CrossEntropyLoss()
+    for epoch in range(53):
+        model.train()
+        l_sum = 0
+        # Loop twice per epoch: once for clean ground truth, once for augmented shifts
+        for augmented_pass in [False, True]:
+            for xb, yb in train_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                if augmented_pass:
+                    shift_x = random.uniform(-2.0, 2.0)
+                    shift_y = random.uniform(-2.0, 2.0)
+                    N, C, H, W = xb.size()
+                    theta = torch.tensor(
+                        [[[1, 0, -2 * shift_x / W], [0, 1, -2 * shift_y / H]]],
+                        device=xb.device,
+                    ).repeat(N, 1, 1)
+
+                    grid = tf.affine_grid(theta, xb.size(), align_corners=False)
+                    xb = tf.grid_sample(xb, grid, align_corners=False)
+                optimizer.zero_grad()
+                loss = criterion(model(xb), yb)
+                loss.backward()
+                optimizer.step()
+                l_sum += loss.item()
+        scheduler.step()
+        curr_lr = optimizer.param_groups[0]["lr"]
+        log(
+            f"Epoch {epoch + 1:02d} | Loss: {l_sum / (2 * len(train_loader)):.4f} | LR: {curr_lr:.5f}"
+        )
+
+    # Save Weights
+    torch.save(model.state_dict(), WEIGHTS_PATH)
+    # Save Grid Config (Memorization)
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(
+            {
+                "xs": float(detected_params[0]),
+                "ys": float(detected_params[1]),
+                "wt": float(detected_params[2]),
+                "ht": float(detected_params[3]),
+            },
+            f,
+        )
+    log(f"Memorized grid and saved weights.")
+
+
+def run_inference(args, visuals, device):
+    import torch
+    import numpy as np
+
+    SimpleCNN = get_cnn_class()
+    model = SimpleCNN(CLUSTERS).to(device)
+
+    # --- INFERENCE MODE ---
+    if not os.path.exists(WEIGHTS_PATH):
+        log("Error: Weights not found. Provide a training file to generate them.")
         return
-
-    if args.train_path:
-        # --- TRAINING MODE ---
-        gt_labels_list = []
-        gt_visuals_list = []
-        gt_indices_list = []
-
-        labels_top, n_lines_top = parse_training_file(args.train_path, 0)
-        gt_labels_list.append(labels_top)
-        gt_visuals_list.append(visuals[: n_lines_top * EXPECTED_COLS])
-        gt_indices_list.append(np.arange(0, n_lines_top * EXPECTED_COLS))
-        log(f"Loaded {n_lines_top} lines from top training file.")
-
-        if args.bottom_train_path:
-            with open(args.bottom_train_path, "r", encoding="utf-8") as f:
-                n_lines_bot = len([l for l in f.read().splitlines() if l.strip()])
-
-            offset = args.lines - n_lines_bot
-            labels_bot, _ = parse_training_file(args.bottom_train_path, offset)
-            gt_labels_list.append(labels_bot)
-            gt_visuals_list.append(
-                visuals[offset * EXPECTED_COLS : (offset + n_lines_bot) * EXPECTED_COLS]
-            )
-            gt_indices_list.append(
-                np.arange(
-                    offset * EXPECTED_COLS, (offset + n_lines_bot) * EXPECTED_COLS
-                )
-            )
-            log(f"Loaded {n_lines_bot} lines from bottom training file.")
-
-        all_gt_labels = np.concatenate(gt_labels_list)
-        all_gt_visuals = np.concatenate(gt_visuals_list)
-        all_gt_indices = np.concatenate(gt_indices_list)
-
-        # Filter out cells marked for skipping via #/-1
-        valid_mask = all_gt_labels != -1
-        all_gt_labels = all_gt_labels[valid_mask]
-        all_gt_visuals = all_gt_visuals[valid_mask]
-        all_gt_indices = all_gt_indices[valid_mask]
-
-        ground_truth_averages = calculate_bucket_averages(all_gt_visuals, all_gt_labels)
-        if args.debug:
-            max_dev = show_outliers(
-                all_gt_visuals,
-                all_gt_labels,
-                ground_truth_averages,
-                "TRAINING TYPO CHECK: Avg vs Max Outlier",
-                indices_map=all_gt_indices,
-            )
-            log(f"Max bucket deviation: {max_dev:.2f}")
-
-        X = torch.tensor(all_gt_visuals, dtype=torch.float32).unsqueeze(1) / 255.0
-        Y = torch.tensor(all_gt_labels, dtype=torch.long)
-        train_idx, _ = train_test_split(
-            np.arange(len(Y)), test_size=0.1, random_state=42
-        )
-        train_loader = DataLoader(
-            TensorDataset(X[train_idx], Y[train_idx]), batch_size=64, shuffle=True
-        )
-
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.2)
-        criterion = nn.CrossEntropyLoss()
-        for epoch in range(53):
-            model.train()
-            l_sum = 0
-            # Loop twice per epoch: once for clean ground truth, once for augmented shifts
-            for augmented_pass in [False, True]:
-                for xb, yb in train_loader:
-                    xb, yb = xb.to(device), yb.to(device)
-                    if augmented_pass:
-                        shift_x = random.uniform(-2.0, 2.0)
-                        shift_y = random.uniform(-2.0, 2.0)
-                        N, C, H, W = xb.size()
-                        theta = torch.tensor(
-                            [[[1, 0, -2 * shift_x / W], [0, 1, -2 * shift_y / H]]],
-                            device=xb.device,
-                        ).repeat(N, 1, 1)
-
-                        grid = tf.affine_grid(theta, xb.size(), align_corners=False)
-                        xb = tf.grid_sample(xb, grid, align_corners=False)
-                    optimizer.zero_grad()
-                    loss = criterion(model(xb), yb)
-                    loss.backward()
-                    optimizer.step()
-                    l_sum += loss.item()
-            scheduler.step()
-            curr_lr = optimizer.param_groups[0]["lr"]
-            log(
-                f"Epoch {epoch + 1:02d} | Loss: {l_sum / (2 * len(train_loader)):.4f} | LR: {curr_lr:.5f}"
-            )
-
-        # Save Weights
-        torch.save(model.state_dict(), WEIGHTS_PATH)
-        # Save Grid Config (Memorization)
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(
-                {
-                    "xs": float(detected_params[0]),
-                    "ys": float(detected_params[1]),
-                    "wt": float(detected_params[2]),
-                    "ht": float(detected_params[3]),
-                },
-                f,
-            )
-        log(f"Memorized grid and saved weights.")
-    else:
-        # --- INFERENCE MODE ---
-        if not os.path.exists(WEIGHTS_PATH):
-            log("Error: Weights not found. Provide a training file to generate them.")
-            return
-        model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=device))
+    model.load_state_dict(torch.load(WEIGHTS_PATH, map_location=device))
 
     model.eval()
     X_all = torch.tensor(visuals, dtype=torch.float32).unsqueeze(1).to(device) / 255.0
@@ -616,9 +602,62 @@ def main():
         log(f"Max bucket deviation: {max_dev:.2f}")
 
 
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("image", help="Path to input image")
+    parser.add_argument(
+        "train_path", nargs="?", default=None, help="Top N lines of ground truth"
+    )
+    parser.add_argument(
+        "bottom_train_path",
+        nargs="?",
+        default=None,
+        help="Optional: Bottom N lines of ground truth",
+    )
+    parser.add_argument("-d", "--debug", action="store_true")
+    parser.add_argument("-q", "--quiet", action="store_true")
+    parser.add_argument("-o", "--output", help="Path to write output instead of stdout")
+    parser.add_argument(
+        "--lines", type=int, default=65, help="Total grid lines in image"
+    )
+    args = parser.parse_args()
+
+    log(f"Input: {args.image}")
+    if args.output:
+        log(f"Output: {args.output}")
+
+    import torch
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Determine if we should load a memorized grid
+    grid_params = None
+    if not args.train_path and os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r") as f:
+                cfg = json.load(f)
+                grid_params = (cfg["xs"], cfg["ys"], cfg["wt"], cfg["ht"])
+                log("Loaded grid configuration from file.")
+        except Exception as e:
+            log(f"Warning: Could not load config: {e}. Re-detecting grid.")
+
+    # Suppress grid debug view if in inference mode with an output path
+    grid_debug = args.debug and not (not args.train_path and args.output)
+    visuals, detected_params = extract_cells(
+        args.image, args.lines, grid_params=grid_params, debug=grid_debug
+    )
+    if visuals is None:
+        return
+
+    if args.train_path:
+        run_training(args, visuals, detected_params, device)
+    else:
+        run_inference(args, visuals, device)
+
+
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, FileNotFoundError, OSError) as e:
+    except Exception as e:
         log(str(e))
         sys.exit(1)

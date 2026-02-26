@@ -1,17 +1,9 @@
 #!/usr/bin/env -S uv.exe run
 import os
 import argparse
-import cv2
 import json
-import numpy as np
 import random
-import skia
 import sys
-import torch
-import traceback
-from multiprocess import Pool
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
-from ultralytics import YOLO
 
 # --- CONFIGURATION ---
 ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
@@ -48,6 +40,8 @@ def eprint(*args, **kwargs):
 
 
 def load_font_pil(randomize=False):
+    from PIL import ImageFont
+
     idx = 0 if not randomize else random.randrange(0, len(FONT_PATHS))
 
     try:
@@ -57,6 +51,8 @@ def load_font_pil(randomize=False):
 
 
 def load_font_skia(randomize=False):
+    import skia
+
     typeface = skia.Typeface("Times New Roman")
     if not typeface:
         raise Exception("Skia typeface could not be initialized!")
@@ -72,6 +68,7 @@ def load_font_skia(randomize=False):
 
 def init_gen_worker():
     """Runs once when each multiprocess worker starts to init worker resources"""
+    import traceback
 
     global worker_font_pil
     global worker_font_skia
@@ -130,6 +127,9 @@ def generate_rand_text():
 # Use Skia to generate the text, because it uses DirectWrite on Windows
 # so we end up with text that better matches what MS Office outputs.
 def generate_sample_skia(text, font=None, debug=False, add_noise=False):
+    import skia
+    from PIL import Image, ImageFilter
+
     if font is None:
         font = load_font_skia()
 
@@ -230,6 +230,8 @@ def generate_sample_skia(text, font=None, debug=False, add_noise=False):
 
 # Generate a text sample with PIL, which uses FreeType for text rendering
 def generate_sample_pil(text, font, debug=False, add_noise=False):
+    from PIL import Image, ImageDraw, ImageFilter
+
     # Create base canvas
     img = Image.new("RGB", (CANVAS_W, CANVAS_H), (255, 255, 255))
     draw = ImageDraw.Draw(img)
@@ -314,6 +316,9 @@ def generate_sample_pil(text, font, debug=False, add_noise=False):
 
 class YOLO_OCR:
     def __init__(self, model_path=None):
+        import torch
+        from ultralytics import YOLO
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         if model_path:
             if not os.path.exists(model_path):
@@ -334,6 +339,8 @@ class YOLO_OCR:
 
     # --- PART 1: DATA GENERATION ---
     def generate_data(self, count=1000, split="train"):
+        from multiprocess import Pool
+
         print(
             f"Generating {count} samples for {split} with {os.cpu_count()} workers..."
         )
@@ -425,6 +432,9 @@ class YOLO_OCR:
 
     # --- PART 3: INFERENCE & DOCUMENT PROCESSING ---
     def process_document(self, image_path):
+        import cv2
+        import numpy as np
+
         img = cv2.imread(image_path)
         # Slightly boost contrast to account for screenshot color drift
         # alpha (1.2) = contrast, beta (0) = brightness
