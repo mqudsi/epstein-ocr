@@ -15,7 +15,8 @@ import random
 import argparse
 import json
 
-sys.stdout.reconfigure(newline='\n')
+sys.stdout.reconfigure(newline="\n")
+
 
 # --- DETERMINISM ---
 def set_seed(seed=42):

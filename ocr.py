@@ -40,10 +40,12 @@ MODEL_IMGSZ = 2400
 worker_font_pil = None
 worker_font_skia = None
 
-sys.stdout.reconfigure(newline='\n')
+sys.stdout.reconfigure(newline="\n")
+
 
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
+
 
 def load_font_pil(randomize=False):
     idx = 0 if not randomize else random.randrange(0, len(FONT_PATHS))
@@ -52,6 +54,7 @@ def load_font_pil(randomize=False):
         return ImageFont.truetype(FONT_PATHS[idx], FONT_SIZE)
     except:
         print(f"Font file {FONT_PATHS[idx]} not found. Please check FONT_PATHS.")
+
 
 def load_font_skia(randomize=False):
     typeface = skia.Typeface("Times New Roman")
@@ -65,6 +68,7 @@ def load_font_skia(randomize=False):
         font.setSubpixel(True)
     font.setEdging(skia.Font.Edging.kSubpixelAntiAlias)
     return font
+
 
 def init_gen_worker():
     """Runs once when each multiprocess worker starts to init worker resources"""
@@ -88,6 +92,7 @@ def init_gen_worker():
         sys.stderr.flush()
         # Kill the process explicitly so the Pool knows it's dead
         os._exit(1)
+
 
 def generate_rand_text():
     # Generate random text, oversampling tricky characters
@@ -120,6 +125,7 @@ def generate_rand_text():
         text = "".join(random.choices(ALPHABET, k=text_len))
 
     return text
+
 
 # Use Skia to generate the text, because it uses DirectWrite on Windows
 # so we end up with text that better matches what MS Office outputs.
@@ -157,7 +163,9 @@ def generate_sample_skia(text, font=None, debug=False, add_noise=False):
     canvas.drawString(text, curr_x, curr_y, font, paint)
 
     clean_snapshot = surface.makeImageSnapshot()
-    img = Image.fromarray(clean_snapshot.toarray(colorType=skia.kRGB_888x_ColorType)[:, :, :3])
+    img = Image.fromarray(
+        clean_snapshot.toarray(colorType=skia.kRGB_888x_ColorType)[:, :, :3]
+    )
 
     dimg = None
     labels = []
@@ -199,7 +207,7 @@ def generate_sample_skia(text, font=None, debug=False, add_noise=False):
             debug_paint = skia.Paint(
                 Color=skia.ColorRED if i % 2 == 0 else skia.ColorGREEN,
                 Style=skia.Paint.kStroke_Style,
-                StrokeWidth=1
+                StrokeWidth=1,
             )
             canvas.drawRect(skia.Rect(left, top, right, bottom), debug_paint)
 
@@ -208,7 +216,9 @@ def generate_sample_skia(text, font=None, debug=False, add_noise=False):
     # If debug, capture the surface after rectangles were drawn
     if debug:
         debug_snapshot = surface.makeImageSnapshot()
-        dimg = Image.fromarray(debug_snapshot.toarray(colorType=skia.kRGB_888x_ColorType)[:, :, :3])
+        dimg = Image.fromarray(
+            debug_snapshot.toarray(colorType=skia.kRGB_888x_ColorType)[:, :, :3]
+        )
 
     # Add some synthetic noise and blur to help with jpeg detection
     if add_noise:
@@ -216,6 +226,7 @@ def generate_sample_skia(text, font=None, debug=False, add_noise=False):
         img = img.filter(ImageFilter.GaussianBlur(radius))
 
     return img, labels, dimg
+
 
 # Generate a text sample with PIL, which uses FreeType for text rendering
 def generate_sample_pil(text, font, debug=False, add_noise=False):
@@ -323,7 +334,9 @@ class YOLO_OCR:
 
     # --- PART 1: DATA GENERATION ---
     def generate_data(self, count=1000, split="train"):
-        print(f"Generating {count} samples for {split} with {os.cpu_count()} workers...")
+        print(
+            f"Generating {count} samples for {split} with {os.cpu_count()} workers..."
+        )
         is_fine_tune = self.fine_tune
         img_dir = os.path.join(DATASET_DIR, split, "images")
         lbl_dir = os.path.join(DATASET_DIR, split, "labels")
@@ -333,7 +346,11 @@ class YOLO_OCR:
         # Generate and save a single train/val image/label pair.
         def inner(i):
             text = generate_rand_text()
-            img, labels, _ = generate_sample_skia(text, font=worker_font_skia) if random.random() < 0.75 else generate_sample_pil(text, font=worker_font_pil)
+            img, labels, _ = (
+                generate_sample_skia(text, font=worker_font_skia)
+                if random.random() < 0.75
+                else generate_sample_pil(text, font=worker_font_pil)
+            )
 
             # Save (at slightly lower resolution when fine-tuning)
             fname = f"{split}_{i:05d}"
@@ -395,9 +412,9 @@ class YOLO_OCR:
                 "lr0": 0.001,
                 "warmup_epochs": 0,
                 "pretrained": True,
-                "box": 7.5, # from default of 7.5
-                "cls": 0.6, # from default of 0.5
-                "dfl": 1.75, # from default of 1.5
+                "box": 7.5,  # from default of 7.5
+                "cls": 0.6,  # from default of 0.5
+                "dfl": 1.75,  # from default of 1.5
                 "overlap_mask": False,
             }
             if self.fine_tune
@@ -479,7 +496,7 @@ class YOLO_OCR:
 
             if len(results[0].boxes) == 0:
                 # print("\n")
-                continue;
+                continue
 
             # # This creates a BGR image with boxes and labels drawn on it
             # annotated_frame = results[0].plot()
@@ -528,6 +545,7 @@ class YOLO_OCR:
 
         return "\n".join(full_text)
 
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -535,7 +553,9 @@ def parse_args():
     )
     parser.add_argument("--train", action="store_true", help="Train the model")
     parser.add_argument("--predict", type=str, help="Path to image for inference")
-    parser.add_argument("--sample", type=str, help="Generate sample of the provided text")
+    parser.add_argument(
+        "--sample", type=str, help="Generate sample of the provided text"
+    )
     parser.add_argument(
         "--model",
         type=str,
@@ -552,6 +572,7 @@ def parse_args():
         args.model = f"runs/detect/train{args.resume}/weights/best.pt"
 
     return args
+
 
 if __name__ == "__main__":
     args = parse_args()
