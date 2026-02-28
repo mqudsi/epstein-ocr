@@ -571,7 +571,7 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=str,
-        default="runs/detect/train/weights/best.pt",
+        default=None,
         help="Path to weights",
     )
     parser.add_argument("--resume", type=str, help="Training run number to resume from")
