@@ -558,6 +558,10 @@ class YOLO_OCR:
 
         return "\n".join(full_text)
 
+    def validate(self):
+        metrics = self.model.val(
+            imgsz=MODEL_IMGSZ,
+        )
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -582,6 +586,8 @@ def parse_args():
         nargs="*",
         help="One or more image files to predict (used with --predict)"
     )
+
+    parser.add_argument("--validate", action="store_true", help="Validate the specified model")
 
     args = parser.parse_args()
 
@@ -611,6 +617,9 @@ if __name__ == "__main__":
     if args.generate:
         ocr.generate_data(count=5000, split="train")
         ocr.generate_data(count=1000, split="val")
+
+    elif args.validate:
+        ocr.validate()
 
     elif args.train:
         ocr.train()
