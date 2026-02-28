@@ -438,7 +438,7 @@ class YOLO_OCR:
         img = cv2.imread(image_path)
         # Slightly boost contrast to account for screenshot color drift
         # alpha (1.2) = contrast, beta (0) = brightness
-        img = cv2.convertScaleAbs(img, alpha=1.2, beta=0)
+        # img = cv2.convertScaleAbs(img, alpha=1.2, beta=0)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         inv = cv2.bitwise_not(gray)
 
