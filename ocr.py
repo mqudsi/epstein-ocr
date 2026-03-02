@@ -494,15 +494,20 @@ class YOLO_OCR:
 
             # Debug
             # cv2.imwrite(f"debug_canvas-{y1}.png", canvas)
+            # if i == 24:
+            #     cv2.imshow(f"debug canvas line {i}", canvas_bgr)
+            #     cv2.waitKey(0)
 
             # Predict, returing even low confidence items
             results = self.model.predict(
                 canvas_bgr,
                 imgsz=MODEL_IMGSZ,
-                conf=0.05,
-                verbose=False,
+                conf=0.02,
+                verbose=True,
                 end2end=False,
-                iou=0.1,
+                iou=0.9,
+                rect=True,
+                max_det=600, # twice the default
             )
 
             if len(results[0].boxes) == 0:
