@@ -95,7 +95,7 @@ def generate_rand_text():
     # Generate random text, oversampling tricky characters
     # hard_chars = "ijlI1t/frs"
     # hard_chars = "ijlI1t/r"
-    hard_chars = "ijlI1t/frsJ"
+    hard_chars = "iilljjttr3cfe"
     # text_len = random.randint(10, 80)
     # random.triangular(low, high, mode)
     # text_len = int(random.triangular(10, 85, 72))
