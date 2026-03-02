@@ -11,6 +11,7 @@ rustc "$0" -o ${OUT} && printf "%s" ${MD5} > ${OUT}.md5) || (rm -f ${OUT};
 printf "fn main() {//%s\n}" "$(cat $0)" | rustc - -o ${OUT} &&
 printf "%s" ${MD5} > ${OUT}.md5))) && exec ${OUT} "$@" || exit $? #*/
 
+use std::convert::TryInto;
 use std::env;
 use std::fs::File;
 use std::io;
@@ -322,9 +323,34 @@ fn report_error(offset: usize, bytes: &[u8], msg: &str) {
         .map(|b| format!("{:02X}", b))
         .collect::<Vec<String>>()
         .join(" ");
+    let b64_src = map_base64_origin(offset);
+
     println!("\n[!] CORRUPTION DETECTED");
     println!("    Offset: 0x{:08X}", offset);
+    println!("    Base64 Offset: {:03}:{:02}+{}", b64_src.line, b64_src.col, b64_src.len - 1);
     println!("    Bytes:  [{}]", hex_found);
     println!("    Error:  {}", msg);
 }
 
+struct Base64Origin {
+    /// 1-indexed line number
+    line: u32,
+    /// 1-indexed column number
+    col: u8,
+    /// Length of base64 sequence contributing to error
+    len: u8,
+}
+
+fn map_base64_origin(offset: usize) -> Base64Origin {
+    // Each byte i corresponds to bits in characters k where overlap exists:
+    // Bits in byte i are [8*i, 8*i + 7]. Bits in char k are [6*k, 6*k + 5].
+    let k_start = (offset * 8).saturating_sub(5) / 6;
+    let k_end = (offset * 8 + 7) / 6;
+
+    // Assume 76-char line lengths
+    Base64Origin {
+        line: ((k_start / 76) + 1).try_into().unwrap(),
+        col: ((k_start % 76) + 1).try_into().unwrap(),
+        len: (k_end - k_start + 1).try_into().unwrap(),
+    }
+}
