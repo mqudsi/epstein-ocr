@@ -470,8 +470,9 @@ class YOLO_OCR:
 
         # Perform predictions line-by-line
         full_text = []
+        th = text_area.shape[0]
         for i, (y1, y2) in enumerate(lines):
-            line_img = text_area[y1:y2, :]
+            line_img = text_area[max(0, y1 - 2) : min(th, y2 + 2), :]
             # Convert back to black on white
             line_img = cv2.bitwise_not(line_img)
 
