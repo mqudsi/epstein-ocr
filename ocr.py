@@ -530,12 +530,18 @@ class YOLO_OCR:
             # print(results.probs)
             # Extract and sort by X-coordinate
             raw_boxes = []
-            for box in results.boxes:
+
+            # Batch move tensors to CPU to avoid synchronous .item() overhead
+            confs = results.boxes.conf.cpu().numpy()
+            clss = results.boxes.cls.cpu().numpy().astype(int)
+            xywhs = results.boxes.xywh.cpu().numpy()
+
+            for idx in range(len(confs)):
                 raw_boxes.append(
                     {
-                        "char": IDX_TO_CHAR[int(box.cls[0].item())],
-                        "conf": box.conf.item(),
-                        "x": box.xywh[0][0].item(),
+                        "char": IDX_TO_CHAR[int(clss[idx])],
+                        "conf": float(confs[idx]),
+                        "x": float(xywhs[idx][0]),
                     }
                 )
 
@@ -571,6 +577,8 @@ class YOLO_OCR:
             #     break
 
         return "\n".join(full_text)
+
+
     def validate(self):
         metrics = self.model.val(
             imgsz=MODEL_IMGSZ,
