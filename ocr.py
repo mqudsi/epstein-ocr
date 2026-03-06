@@ -546,7 +546,7 @@ class YOLO_OCR:
                 prev = filtered[-1]
 
                 # Check if this box overlaps significantly with the previous
-                if current["x"] - prev["x"] < 3:
+                if current["x"] - prev["x"] < 4:
                     # Replace the last one if the current is more confident
                     if current["conf"] > prev["conf"]:
                         filtered[-1] = current
