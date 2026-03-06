@@ -468,8 +468,8 @@ class YOLO_OCR:
                     start = line_indices[i]
             lines.append((start, line_indices[-1]))
 
-        # Perform predictions line-by-line
-        full_text = []
+        # Prepare line canvases for batch prediction
+        line_canvases = []
         th = text_area.shape[0]
         for i, (y1, y2) in enumerate(lines):
             line_img = text_area[max(0, y1 - 2) : min(th, y2 + 2), :]
@@ -491,6 +491,7 @@ class YOLO_OCR:
             offset_y = (CANVAS_H - h) // 2
             canvas[offset_y : offset_y + h, offset_x : offset_x + w] = line_img
             canvas_bgr = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
+            line_canvases.append(canvas_bgr)
 
             # Debug
             # cv2.imwrite(f"debug_canvas-{y1}.png", canvas)
@@ -498,32 +499,38 @@ class YOLO_OCR:
             #     cv2.imshow(f"debug canvas line {i}", canvas_bgr)
             #     cv2.waitKey(0)
 
-            # Predict, returing even low confidence items
-            results = self.model.predict(
-                canvas_bgr,
-                imgsz=MODEL_IMGSZ,
-                conf=0.02,
-                verbose=False,
-                end2end=False,
-                iou=0.9,
-                rect=True,
-                max_det=600, # twice the default
-            )
+        if not line_canvases:
+            return ""
 
-            if len(results[0].boxes) == 0:
+        # Predict the entire batch, returning even low confidence items
+        batch_results = self.model.predict(
+            line_canvases,
+            imgsz=MODEL_IMGSZ,
+            conf=0.02,
+            verbose=False,
+            end2end=False,
+            iou=0.9,
+            rect=True,
+            max_det=600, # twice the default
+        )
+
+        # Process results line-by-line
+        full_text = []
+        for i, results in enumerate(batch_results):
+            if len(results.boxes) == 0:
                 # print("\n")
                 continue
 
             # # This creates a BGR image with boxes and labels drawn on it
-            # annotated_frame = results[0].plot()
+            # annotated_frame = results.plot()
             #
             # # Save or display it
             # cv2.imwrite(f"detected_line.png", annotated_frame)
 
-            # print(results[0].probs)
+            # print(results.probs)
             # Extract and sort by X-coordinate
             raw_boxes = []
-            for box in results[0].boxes:
+            for box in results.boxes:
                 raw_boxes.append(
                     {
                         "char": IDX_TO_CHAR[int(box.cls[0].item())],
@@ -533,10 +540,11 @@ class YOLO_OCR:
                 )
 
             raw_boxes.sort(key=lambda b: b["x"])
-            # eprint(json.dumps(raw_boxes, indent=4))
+            # if i == 2:
+            #     eprint(json.dumps(raw_boxes, indent=4))
 
             line_str = "".join([b["char"] for b in raw_boxes])
-            # eprint(f"Original line {i}: {line_str}")
+            # eprint(f"Original line {i+1}: {line_str}")
 
             # Now try to filter out bad overlaps. We know characters never truly overlap,
             # so if two characters are located in roughly the same position, only take
@@ -556,14 +564,13 @@ class YOLO_OCR:
                     filtered.append(current)
 
             line_str = "".join([b["char"] for b in filtered])
-            # eprint(f"Filtered line {i}: {line_str}")
+            # eprint(f"Filtered line {i+1}: {line_str}")
             full_text.append(line_str)
 
-            # if i == 15:
+            # if i == 26:
             #     break
 
         return "\n".join(full_text)
-
     def validate(self):
         metrics = self.model.val(
             imgsz=MODEL_IMGSZ,
