@@ -503,7 +503,7 @@ class YOLO_OCR:
                 canvas_bgr,
                 imgsz=MODEL_IMGSZ,
                 conf=0.02,
-                verbose=True,
+                verbose=False,
                 end2end=False,
                 iou=0.9,
                 rect=True,
