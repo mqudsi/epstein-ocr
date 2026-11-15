@@ -31,6 +31,7 @@ New JSONL datasets are preferable because they retain the exact source string.
 
 import argparse
 import csv
+import heapq
 import json
 import math
 import os
@@ -614,21 +615,130 @@ class CRNN(nn.Module):
         return logits, lengths
 
 
-def greedy_decode(logits, lengths):
-    ids = logits.argmax(dim=-1).cpu().tolist()
+_NEG_INF = -math.inf
+_BLANK_SKIP_LOGP = math.log(0.9999)
+_CHAR_PRUNE_LOGP = math.log(1e-4)
+
+
+def _logaddexp(a, b):
+    if a == _NEG_INF:
+        return b
+    if b == _NEG_INF:
+        return a
+    if a > b:
+        return a + math.log1p(math.exp(b - a))
+    return b + math.log1p(math.exp(a - b))
+
+
+def prefix_beam_decode(logits, lengths, beam_width=10):
+    """
+    Pure acoustic CTC prefix beam search (no language model or dictionary).
+    Suitable for arbitrary strings such as Base64.
+    """
+    if beam_width < 1:
+        raise ValueError("beam_width must be at least 1")
+
+    log_probs = logits.float().log_softmax(dim=-1)
+    top_k = min(len(ALPHABET), max(beam_width, 16))
+    top_vals, top_ids = log_probs[:, :, 1:].topk(top_k, dim=-1)
+    top_ids = top_ids + 1  # shift to 1..len(ALPHABET)
+
+    blank_seqs = log_probs[:, :, BLANK].cpu().tolist()
+    val_seqs = top_vals.cpu().tolist()
+    id_seqs = top_ids.cpu().tolist()
+    length_list = lengths.tolist()
+
     results = []
 
-    for sequence, length in zip(ids, lengths.tolist()):
-        previous = BLANK
-        chars = []
+    for blank_seq, val_seq, id_seq, length in zip(
+        blank_seqs, val_seqs, id_seqs, length_list
+    ):
+        if length == 0:
+            results.append("")
+            continue
 
-        for token in sequence[:length]:
-            if token != BLANK and token != previous:
-                chars.append(ID_TO_CHAR[token])
-            # A blank resets repetition collapsing.
-            previous = token
+        # prefix -> (log_prob_ending_in_blank, log_prob_ending_in_nonblank)
+        beam = {"": (0.0, _NEG_INF)}
+        prev_was_blank = False
 
-        results.append("".join(chars))
+        for b_lp, vals, ids in zip(
+            blank_seq[:length], val_seq[:length], id_seq[:length]
+        ):
+            if b_lp > _BLANK_SKIP_LOGP:
+                if not prev_was_blank:
+                    beam = {
+                        prefix: (_logaddexp(p_b, p_nb), _NEG_INF)
+                        for prefix, (p_b, p_nb) in beam.items()
+                    }
+                    prev_was_blank = True
+                continue
+
+            prev_was_blank = False
+            next_beam = {}
+
+            for prefix, (p_b, p_nb) in beam.items():
+                p_total = _logaddexp(p_b, p_nb)
+                cur = next_beam.get(prefix)
+                nb_b = _logaddexp(cur[0], p_total + b_lp) if cur else p_total + b_lp
+                nb_nb = cur[1] if cur else _NEG_INF
+                next_beam[prefix] = (nb_b, nb_nb)
+
+            candidates = []
+            for idx, (c_id, c_lp) in enumerate(zip(ids, vals)):
+                if idx > 0 and c_lp < _CHAR_PRUNE_LOGP:
+                    break
+                candidates.append((ID_TO_CHAR[c_id], c_lp))
+
+            for prefix, (p_b, p_nb) in beam.items():
+                p_total = _logaddexp(p_b, p_nb)
+                last_ch = prefix[-1] if prefix else ""
+
+                for ch, c_lp in candidates:
+                    if ch == last_ch:
+                        # No intervening blank: collapses onto the same prefix.
+                        if p_nb != _NEG_INF:
+                            cur = next_beam.get(prefix)
+                            nb_b = cur[0] if cur else _NEG_INF
+                            nb_nb = (
+                                _logaddexp(cur[1], p_nb + c_lp)
+                                if cur else p_nb + c_lp
+                            )
+                            next_beam[prefix] = (nb_b, nb_nb)
+
+                        # Preceded by a blank: extends prefix with a duplicate char.
+                        if p_b != _NEG_INF:
+                            ext = prefix + ch
+                            cur = next_beam.get(ext)
+                            nb_b = cur[0] if cur else _NEG_INF
+                            nb_nb = (
+                                _logaddexp(cur[1], p_b + c_lp)
+                                if cur else p_b + c_lp
+                            )
+                            next_beam[ext] = (nb_b, nb_nb)
+                    else:
+                        ext = prefix + ch
+                        cur = next_beam.get(ext)
+                        nb_b = cur[0] if cur else _NEG_INF
+                        nb_nb = (
+                            _logaddexp(cur[1], p_total + c_lp)
+                            if cur else p_total + c_lp
+                        )
+                        next_beam[ext] = (nb_b, nb_nb)
+
+            if len(next_beam) > beam_width:
+                beam = dict(heapq.nlargest(
+                    beam_width,
+                    next_beam.items(),
+                    key=lambda item: _logaddexp(item[1][0], item[1][1]),
+                ))
+            else:
+                beam = next_beam
+
+        best_prefix, _ = max(
+            beam.items(),
+            key=lambda item: _logaddexp(item[1][0], item[1][1]),
+        )
+        results.append(best_prefix)
 
     return results
 
@@ -705,7 +815,7 @@ def edit_counts(reference, hypothesis):
 
 
 @torch.inference_mode()
-def evaluate(model, loader, device, amp, errors_path=None):
+def evaluate(model, loader, device, amp, errors_path=None, beam_width=10):
     model.eval()
     criterion = nn.CTCLoss(blank=BLANK, zero_infinity=False)
 
@@ -741,7 +851,9 @@ def evaluate(model, loader, device, amp, errors_path=None):
                     "Check labels, time-step counts, and numeric stability."
                 )
 
-            predictions = greedy_decode(logits, lengths)
+            predictions = prefix_beam_decode(
+                logits, lengths, beam_width=beam_width
+            )
 
             total_loss += float(loss) * len(texts)
             total_lines += len(texts)
@@ -1118,7 +1230,8 @@ def train(args):
                 )
 
         metrics = evaluate(
-            model, val_loader, args.device_obj, amp
+            model, val_loader, args.device_obj, amp,
+            beam_width=args.beam_width
         )
 
         regression_metrics = None
@@ -1129,6 +1242,7 @@ def train(args):
                 args.device_obj,
                 amp,
                 errors_path=out / "regression_errors.jsonl",
+                beam_width=args.beam_width,
             )
 
         train_loss = accumulated_loss / seen
@@ -1246,6 +1360,7 @@ def validate(args):
         args.device_obj,
         amp,
         args.errors,
+        beam_width=args.beam_width,
     )
     print_metrics(metrics)
 
@@ -1280,7 +1395,11 @@ def recognize_lines(model, lines, cfg, args):
         ):
             logits, lengths = model(images, widths)
 
-        results.extend(greedy_decode(logits, lengths))
+        results.extend(
+            prefix_beam_decode(
+               logits, lengths, beam_width=args.beam_width
+            )
+        )
 
     return results
 
@@ -1850,6 +1969,12 @@ def parse_args():
             "examples when --regressions is supplied; default: 0.10"
         ),
     )
+    parser.add_argument(
+        "--beam-width",
+        type=int,
+        default=10,
+            help="CTC prefix beam search width (default: 10)",
+    )
 
     args = parser.parse_args()
 
@@ -1865,6 +1990,8 @@ def parse_args():
         parser.error(
             "--regression-fraction must be greater than 0 and less than 1"
         )
+    if args.beam_width < 1:
+        parser.error("--beam-width must be positive")
 
     return args
 
