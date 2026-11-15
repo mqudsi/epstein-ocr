@@ -814,8 +814,119 @@ def edit_counts(reference, hypothesis):
     return substitutions, deletions, insertions
 
 
+def align_edits(reference, hypothesis):
+    """
+    Optimal Levenshtein alignment returning:
+        (substitutions, deletions, insertions,
+         aligned_ref, aligned_hyp, diff_markers, edit_positions)
+
+    Uses '-' for alignment gaps (not in ALPHABET) and 1-based reference
+    columns for edit_positions: [(col, op), ...].
+    """
+    n = len(reference)
+    m = len(hypothesis)
+
+    # Match the tie-breaking order of edit_counts():
+    # substitution/match first, then deletion, then insertion.
+    dp = [[(0, None)] * (m + 1) for _ in range(n + 1)]
+
+    for i in range(1, n + 1):
+        dp[i][0] = (i, "D")
+    for j in range(1, m + 1):
+        dp[0][j] = (j, "I")
+
+    for i in range(1, n + 1):
+        ref_ch = reference[i - 1]
+        row = dp[i]
+        prev_row = dp[i - 1]
+        for j in range(1, m + 1):
+            hyp_ch = hypothesis[j - 1]
+            sub_cost = prev_row[j - 1][0] + (0 if ref_ch == hyp_ch else 1)
+            del_cost = prev_row[j][0] + 1
+            ins_cost = row[j - 1][0] + 1
+
+            best_cost = sub_cost
+            best_op = "=" if ref_ch == hyp_ch else "S"
+
+            if del_cost < best_cost:
+                best_cost = del_cost
+                best_op = "D"
+            if ins_cost < best_cost:
+                best_cost = ins_cost
+                best_op = "I"
+
+            row[j] = (best_cost, best_op)
+
+    aligned_ref = []
+    aligned_hyp = []
+    diff_markers = []
+    ops_reversed = []
+
+    i, j = n, m
+    while i > 0 or j > 0:
+        _, op = dp[i][j]
+        ops_reversed.append(op)
+        if op in ("=", "S"):
+            aligned_ref.append(reference[i - 1])
+            aligned_hyp.append(hypothesis[j - 1])
+            diff_markers.append(" " if op == "=" else "S")
+            i -= 1
+            j -= 1
+        elif op == "D":
+            aligned_ref.append(reference[i - 1])
+            aligned_hyp.append("-")
+            diff_markers.append("D")
+            i -= 1
+        else:  # "I"
+            aligned_ref.append("-")
+            aligned_hyp.append(hypothesis[j - 1])
+            diff_markers.append("I")
+            j -= 1
+
+    aligned_ref.reverse()
+    aligned_hyp.reverse()
+    diff_markers.reverse()
+    ops_reversed.reverse()
+
+    s = d = ins = 0
+    col = 1
+    edit_positions = []
+    for op in ops_reversed:
+        if op == "=":
+            col += 1
+        elif op == "S":
+            s += 1
+            edit_positions.append((col, "S"))
+            col += 1
+        elif op == "D":
+            d += 1
+            edit_positions.append((col, "D"))
+            col += 1
+        else:  # "I"
+            ins += 1
+            edit_positions.append((col, "I"))
+
+    return (
+        s,
+        d,
+        ins,
+        "".join(aligned_ref),
+        "".join(aligned_hyp),
+        "".join(diff_markers),
+        edit_positions,
+    )
+
+
 @torch.inference_mode()
-def evaluate(model, loader, device, amp, errors_path=None, beam_width=10):
+def evaluate(
+    model,
+    loader,
+    device,
+    amp,
+    errors_path=None,
+    beam_width=10,
+    collect_failures=False,
+):
     model.eval()
     criterion = nn.CTCLoss(blank=BLANK, zero_infinity=False)
 
@@ -824,6 +935,7 @@ def evaluate(model, loader, device, amp, errors_path=None, beam_width=10):
     total_chars = 0
     exact = 0
     substitutions = deletions = insertions = 0
+    failures = []
 
     errors_file = None
     if errors_path:
@@ -861,8 +973,32 @@ def evaluate(model, loader, device, amp, errors_path=None, beam_width=10):
             for truth, prediction, path in zip(texts, predictions, paths):
                 if truth == prediction:
                     s = d = i = 0
+                elif collect_failures:
+                    (
+                        s,
+                        d,
+                        i,
+                        aligned_truth,
+                        aligned_pred,
+                        diff,
+                        positions,
+                    ) = align_edits(truth, prediction)
+                    p = Path(path)
+                    name = p.parent.name if p.name == "line.png" else p.name
+                    failures.append({
+                        "name": name,
+                        "path": path,
+                        "substitutions": s,
+                        "deletions": d,
+                        "insertions": i,
+                        "positions": positions,
+                        "aligned_truth": aligned_truth,
+                        "aligned_pred": aligned_pred,
+                        "diff": diff,
+                    })
                 else:
                     s, d, i = edit_counts(truth, prediction)
+
                 substitutions += s
                 deletions += d
                 insertions += i
@@ -882,7 +1018,7 @@ def evaluate(model, loader, device, amp, errors_path=None, beam_width=10):
         if errors_file:
             errors_file.close()
 
-    return {
+    result = {
         "loss": total_loss / total_lines,
         "cer": (
             substitutions + deletions + insertions
@@ -894,6 +1030,9 @@ def evaluate(model, loader, device, amp, errors_path=None, beam_width=10):
         "lines": total_lines,
         "characters": total_chars,
     }
+    if collect_failures:
+        result["failures"] = failures
+    return result
 
 
 def print_metrics(metrics):
@@ -904,6 +1043,18 @@ def print_metrics(metrics):
         f"S/D/I={metrics['substitutions']}/"
         f"{metrics['deletions']}/{metrics['insertions']}"
     )
+
+    for fail in metrics.get("failures", ()):
+        cols = ", ".join(f"{col}({op})" for col, op in fail["positions"])
+        col_label = "col" if len(fail["positions"]) == 1 else "cols"
+        eprint(
+            f"  FAIL {fail['name']}  {col_label} {cols}  "
+            f"S/D/I={fail['substitutions']}/"
+            f"{fail['deletions']}/{fail['insertions']}"
+        )
+        eprint(f"    expected: {fail['aligned_truth']}")
+        eprint(f"    actual:   {fail['aligned_pred']}")
+        eprint(f"    diff:     {fail['diff']}")
 
 
 # ---------------------------------------------------------------------------
@@ -1243,6 +1394,7 @@ def train(args):
                 amp,
                 errors_path=out / "regression_errors.jsonl",
                 beam_width=args.beam_width,
+                collect_failures=True,
             )
 
         train_loss = accumulated_loss / seen
@@ -1361,6 +1513,7 @@ def validate(args):
         amp,
         args.errors,
         beam_width=args.beam_width,
+        collect_failures=(args.split == "regressions"),
     )
     print_metrics(metrics)
 
@@ -1963,7 +2116,7 @@ def parse_args():
     parser.add_argument(
         "--regression-fraction",
         type=float,
-        default=0.10,
+        default=0.03,
         help=(
             "Fraction of training exposures assigned to regression "
             "examples when --regressions is supplied; default: 0.10"
