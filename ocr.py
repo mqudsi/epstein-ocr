@@ -1422,7 +1422,10 @@ def predict(args):
                 line_text,
             )
 
-        print("\n".join(text))
+        try:
+            print("\n".join(text))
+        except BrokenPipeError:
+            return
 
     # Outside the file loop: only the final input file ends the stream.
     length_diagnostic.finish()
@@ -1886,6 +1889,85 @@ def main():
     elif args.predict:
         predict(args)
 
+def _start_windows_parent_watchdog():
+    if sys.platform != "win32":
+        return
+
+    import ctypes
+    import threading
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    TH32CS_SNAPPROCESS = 0x00000002
+    SYNCHRONIZE = 0x00100000
+    INFINITE = 0xFFFFFFFF
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snap == ctypes.c_void_p(-1).value:
+        return
+
+    parents = {}
+    names = {}
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        if kernel32.Process32FirstW(snap, ctypes.byref(entry)):
+            while True:
+                parents[entry.th32ProcessID] = entry.th32ParentProcessID
+                names[entry.th32ProcessID] = entry.szExeFile.lower()
+                if not kernel32.Process32NextW(snap, ctypes.byref(entry)):
+                    break
+    finally:
+        kernel32.CloseHandle(snap)
+
+    # Watch our immediate parent (.venv python stub) and uv.exe if present.
+    # Stop before wslhost.exe/wsl.exe, which may outlive individual commands.
+    handles = []
+    pid = os.getpid()
+    for _ in range(4):
+        ppid = parents.get(pid)
+        if not ppid or ppid == pid or ppid in parents and names.get(ppid) in {"wslhost.exe", "wsl.exe"}:
+            break
+        handle = kernel32.OpenProcess(SYNCHRONIZE, False, ppid)
+        if handle:
+            handles.append(handle)
+        if names.get(ppid) == "uv.exe":
+            break
+        pid = ppid
+
+    if not handles:
+        return
+
+    def watch():
+        arr = (wintypes.HANDLE * len(handles))(*handles)
+        kernel32.WaitForMultipleObjects(len(handles), arr, False, INFINITE)
+        os._exit(130)
+
+    threading.Thread(target=watch, daemon=True).start()
 
 if __name__ == "__main__":
-    main()
+    try:
+        _start_windows_parent_watchdog()
+        main()
+    except BrokenPipeError:
+        # redirect stdout to /dev/null
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        sys.exit(0)
+    except KeyboardInterrupt:
+        eprint("\nInterrupted.")
+        sys.exit(130)
