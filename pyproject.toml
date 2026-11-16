@@ -9,6 +9,7 @@ dependencies = [
     "multiprocess>=0.70.19",
     "opencv-contrib-python>=4.13.0.92",
     "opencv-python>=4.13.0.92",
+    "pywin32>=312; sys_platform == 'win32'",
     "scikit-image>=0.26.0",
     "scikit-learn>=1.8.0",
     "skia-python>=138.0",

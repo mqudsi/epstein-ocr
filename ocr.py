@@ -8,6 +8,7 @@ Dependencies:
     numpy
     pillow
     skia-python  # needed for --renderer skia/mixed
+    pywin32      # needed for --renderer word/mixed on Windows
 
 Dataset:
     ocr_dataset_ctc/
@@ -272,6 +273,7 @@ class LineDataset(Dataset):
             tensor = prepare_line(image, self.cfg)
         return tensor, text, str(path)
 
+
 class VerticalShiftDataset(Dataset):
     """
     Apply small vertical translations AFTER prepare_line().
@@ -315,6 +317,7 @@ class VerticalShiftDataset(Dataset):
             shifted[:, :shift, :] = image[:, -shift:, :]
 
         return shifted, text, path
+
 
 class RegressionDataset(Dataset):
     """
@@ -532,6 +535,7 @@ def make_loader(
         generator=generator,
         persistent_workers=args.workers > 0,
     )
+
 
 # ---------------------------------------------------------------------------
 # Model
@@ -1466,6 +1470,7 @@ def train(args):
             eprint("Known regressions (included in training):")
             print_metrics(regression_metrics)
 
+
 # ---------------------------------------------------------------------------
 # Validation and document prediction
 # ---------------------------------------------------------------------------
@@ -1514,9 +1519,10 @@ def validate(args):
         amp,
         args.errors,
         beam_width=args.beam_width,
-        collect_failures=(args.split == "regressions"),
+        collect_failures=(True or args.split == "regressions"),
     )
     print_metrics(metrics)
+
 
 @torch.inference_mode()
 def recognize_lines(model, lines, cfg, args):
@@ -1556,6 +1562,7 @@ def recognize_lines(model, lines, cfg, args):
         )
 
     return results
+
 
 class LineLengthDiagnostic:
     def __init__(self, expected=76):
@@ -1622,6 +1629,7 @@ class LineLengthDiagnostic:
             "and no following nonempty line remains to form a pair."
         )
         self.pending = None
+
 
 def predict(args):
     if not args.files:
@@ -1732,6 +1740,7 @@ def add_repeated_run(text, probability=0.35):
         + text[start + run_length:]
     )
 
+
 def random_text():
     hard = "iilljjttr3cfe"
 
@@ -1756,7 +1765,10 @@ def random_text():
 
     return add_repeated_run(text)
 
+
 def random_base64():
+    import base64
+
     kind = random.randrange(3)
     size = random.randint(64, 512)
 
@@ -1773,135 +1785,856 @@ def random_base64():
 
     return base64.b64encode(payload).decode("ascii")
 
+
+class WordRenderer:
+    """
+    Render lines using Microsoft Word (winword.exe via COM automation)
+    with Times New Roman ONLY (no variants, bold, or italic), capturing
+    Word's live window rendering (ClearType, hinting, subpixel positioning,
+    DirectWrite/Word layout).
+    """
+
+    def __init__(self, font_size_px):
+        if sys.platform != "win32":
+            raise RuntimeError(
+                "MS Word rendering (--renderer word/mixed) is only "
+                "supported on Windows."
+            )
+
+        try:
+            import pythoncom
+            import win32com.client
+        except ImportError as exc:
+            raise RuntimeError(
+                "Install pywin32 for --renderer word/mixed "
+                "(or use --renderer pil/skia)."
+            ) from exc
+
+        import ctypes
+        from ctypes import wintypes
+
+        self.ctypes = ctypes
+        self.wintypes = wintypes
+        self.pythoncom = pythoncom
+        self.win32com = win32com
+        self.font_size_px = font_size_px
+
+        self._setup_win32()
+        self._enable_dpi_awareness()
+
+        self._com_initialized = False
+        try:
+            pythoncom.CoInitialize()
+            self._com_initialized = True
+        except Exception:
+            pass
+
+        self.app = None
+        self.doc = None
+        self._saved_options = {}
+
+        try:
+            # DispatchEx starts an isolated winword.exe instance so open
+            # user documents and settings are left untouched.
+            self.app = win32com.client.DispatchEx("Word.Application")
+            self.app.Visible = True
+            self.app.DisplayAlerts = 0  # wdAlertsNone
+
+            opts = self.app.Options
+            for opt_name in (
+                "CheckSpellingAsYouType",
+                "CheckGrammarAsYouType",
+                "CheckGrammarWithSpelling",
+                "ContextualSpeller",
+            ):
+                try:
+                    self._saved_options[opt_name] = getattr(opts, opt_name)
+                    setattr(opts, opt_name, False)
+                except Exception:
+                    pass
+
+            self.doc = self.app.Documents.Add()
+            self.doc.ShowSpellingErrors = False
+            self.doc.ShowGrammaticalErrors = False
+
+            ps = self.doc.PageSetup
+            ps.PageWidth = 1400
+            ps.PageHeight = 900
+            ps.LeftMargin = 54
+            ps.RightMargin = 36
+            ps.TopMargin = 36
+            ps.BottomMargin = 36
+            ps.HeaderDistance = 0
+            ps.FooterDistance = 0
+
+            self._caption = f"OCRWordRender_{os.getpid()}_{int(time.time())}"
+            self.win = self.doc.ActiveWindow
+            self.win.Caption = self._caption
+            self.win.WindowState = 0  # wdWindowStateNormal
+
+            view = self.win.View
+            view.Type = 3  # wdPrintView
+            view.Zoom.Percentage = 100
+            view.ShowAll = False
+            view.ShowParagraphs = False
+            view.ShowSpaces = False
+            view.ShowTabs = False
+            view.ShowHiddenText = False
+            view.ShowBookmarks = False
+            try:
+                self.win.DisplayRulers = False
+            except Exception:
+                pass
+
+            self.hwnd_opus, self.hwnd_wwg = self._find_word_windows()
+
+            # Resize without stealing focus (SWP_NOACTIVATE=0x10, SWP_SHOWWINDOW=0x40).
+            work_l, work_t, work_w, work_h = self._get_work_area()
+            win_x = work_l + 10
+            win_y = work_t + 10
+            win_w = min(max(800, work_w - 20), 1500)
+            win_h = min(max(600, work_h - 20), 960)
+            self.user32.SetWindowPos(
+                self.hwnd_opus, None, win_x, win_y, win_w, win_h, 0x0010 | 0x0040
+            )
+            for _ in range(5):
+                self.user32.UpdateWindow(self.hwnd_opus)
+                self._pump_messages()
+                time.sleep(0.02)
+
+            self.dpi = int(self.user32.GetDpiForWindow(self.hwnd_opus) or 96)
+            self.font_size_pt = self.font_size_px * 72.0 / self.dpi
+            self.space_after_pt = max(12.0, self.font_size_pt * 1.1)
+
+            client_rect = wintypes.RECT()
+            self.user32.GetClientRect(
+                self.hwnd_wwg, ctypes.byref(client_rect)
+            )
+            wwg_w = max(400, int(client_rect.right - client_rect.left))
+            wwg_h = max(200, int(client_rect.bottom - client_rect.top))
+
+            # Keep the page narrower than the visible _WwG pane so no line
+            # is ever clipped horizontally at 100% zoom.
+            wwg_w_pt = wwg_w * 72.0 / self.dpi
+            ps.PageWidth = max(500, min(1400, int(wwg_w_pt - 40)))
+            ps.LeftMargin = 24
+            ps.RightMargin = 24
+
+            top_overhead_px = ps.TopMargin * self.dpi / 72.0 + 80.0
+            line_pitch_px = (
+                (self.font_size_pt * 1.3 + self.space_after_pt + 4.0)
+                * self.dpi / 72.0
+            )
+            usable_h = max(line_pitch_px, wwg_h - top_overhead_px - 60.0)
+            self.max_batch = max(1, min(18, int(usable_h // line_pitch_px)))
+        except Exception:
+            self.close()
+            raise
+
+    def _setup_win32(self):
+        ctypes = self.ctypes
+        wintypes = self.wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+
+        self.WNDENUMPROC = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+        )
+
+        class BITMAPINFOHEADER(ctypes.Structure):
+            _fields_ = [
+                ("biSize", wintypes.DWORD),
+                ("biWidth", wintypes.LONG),
+                ("biHeight", wintypes.LONG),
+                ("biPlanes", wintypes.WORD),
+                ("biBitCount", wintypes.WORD),
+                ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD),
+                ("biXPelsPerMeter", wintypes.LONG),
+                ("biYPelsPerMeter", wintypes.LONG),
+                ("biClrUsed", wintypes.DWORD),
+                ("biClrImportant", wintypes.DWORD),
+            ]
+
+        class BITMAPINFO(ctypes.Structure):
+            _fields_ = [
+                ("bmiHeader", BITMAPINFOHEADER),
+                ("bmiColors", wintypes.DWORD * 3),
+            ]
+
+        self.BITMAPINFOHEADER = BITMAPINFOHEADER
+        self.BITMAPINFO = BITMAPINFO
+
+        user32.GetDC.argtypes = [wintypes.HWND]
+        user32.GetDC.restype = wintypes.HDC
+        user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        user32.ReleaseDC.restype = ctypes.c_int
+        user32.GetWindowRect.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.RECT)
+        ]
+        user32.GetWindowRect.restype = wintypes.BOOL
+        user32.GetClientRect.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.RECT)
+        ]
+        user32.GetClientRect.restype = wintypes.BOOL
+        user32.ClientToScreen.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.POINT)
+        ]
+        user32.ClientToScreen.restype = wintypes.BOOL
+        user32.PrintWindow.argtypes = [
+            wintypes.HWND, wintypes.HDC, wintypes.UINT
+        ]
+        user32.PrintWindow.restype = wintypes.BOOL
+        user32.SetWindowPos.argtypes = [
+            wintypes.HWND, wintypes.HWND,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            wintypes.UINT,
+        ]
+        user32.SetWindowPos.restype = wintypes.BOOL
+        user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.ShowWindow.restype = wintypes.BOOL
+        user32.IsIconic.argtypes = [wintypes.HWND]
+        user32.IsIconic.restype = wintypes.BOOL
+        user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        user32.IsWindowVisible.restype = wintypes.BOOL
+        user32.UpdateWindow.argtypes = [wintypes.HWND]
+        user32.UpdateWindow.restype = wintypes.BOOL
+        user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+        user32.GetDpiForWindow.restype = wintypes.UINT
+        user32.EnumWindows.argtypes = [self.WNDENUMPROC, wintypes.LPARAM]
+        user32.EnumWindows.restype = wintypes.BOOL
+        user32.EnumChildWindows.argtypes = [
+            wintypes.HWND, self.WNDENUMPROC, wintypes.LPARAM
+        ]
+        user32.EnumChildWindows.restype = wintypes.BOOL
+        user32.GetClassNameW.argtypes = [
+            wintypes.HWND, wintypes.LPWSTR, ctypes.c_int
+        ]
+        user32.GetClassNameW.restype = ctypes.c_int
+        user32.GetWindowTextW.argtypes = [
+            wintypes.HWND, wintypes.LPWSTR, ctypes.c_int
+        ]
+        user32.GetWindowTextW.restype = ctypes.c_int
+        user32.SystemParametersInfoW.argtypes = [
+            wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT
+        ]
+        user32.SystemParametersInfoW.restype = wintypes.BOOL
+
+        gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+        gdi32.CreateCompatibleDC.restype = wintypes.HDC
+        gdi32.DeleteDC.argtypes = [wintypes.HDC]
+        gdi32.DeleteDC.restype = wintypes.BOOL
+        gdi32.CreateDIBSection.argtypes = [
+            wintypes.HDC,
+            ctypes.POINTER(BITMAPINFO),
+            wintypes.UINT,
+            ctypes.POINTER(ctypes.c_void_p),
+            wintypes.HANDLE,
+            wintypes.DWORD,
+        ]
+        gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+        gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HGDIOBJ]
+        gdi32.SelectObject.restype = wintypes.HGDIOBJ
+        gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        gdi32.DeleteObject.restype = wintypes.BOOL
+
+        self.user32 = user32
+        self.gdi32 = gdi32
+
+    def _enable_dpi_awareness(self):
+        ctypes = self.ctypes
+        try:
+            # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 (-4)
+            self.user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+            self.user32.SetProcessDpiAwarenessContext.restype = self.wintypes.BOOL
+            if self.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+                return
+        except Exception:
+            pass
+        try:
+            shcore = ctypes.WinDLL("shcore", use_last_error=True)
+            shcore.SetProcessDpiAwareness(2)
+            return
+        except Exception:
+            pass
+        try:
+            self.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+    def _get_work_area(self):
+        rect = self.wintypes.RECT()
+        # SPI_GETWORKAREA = 0x0030
+        if self.user32.SystemParametersInfoW(
+            0x0030, 0, self.ctypes.byref(rect), 0
+        ):
+            return (
+                int(rect.left),
+                int(rect.top),
+                int(rect.right - rect.left),
+                int(rect.bottom - rect.top),
+            )
+        return 0, 0, 1400, 900
+
+    def _get_work_area_size(self):
+        rect = self.wintypes.RECT()
+        # SPI_GETWORKAREA = 0x0030
+        if self.user32.SystemParametersInfoW(
+            0x0030, 0, self.ctypes.byref(rect), 0
+        ):
+            return (
+                max(800, int(rect.right - rect.left) - 40),
+                max(600, int(rect.bottom - rect.top) - 40),
+            )
+        return 1400, 900
+
+    def _pump_messages(self):
+        try:
+            self.pythoncom.PumpWaitingMessages()
+        except Exception:
+            pass
+
+    def _find_word_windows(self):
+        ctypes = self.ctypes
+        cls_buf = ctypes.create_unicode_buffer(256)
+        txt_buf = ctypes.create_unicode_buffer(512)
+
+        hwnd_opus = None
+        for _ in range(40):
+            found = []
+
+            def on_top(hwnd, _lparam):
+                self.user32.GetClassNameW(hwnd, cls_buf, 256)
+                if cls_buf.value == "OpusApp":
+                    self.user32.GetWindowTextW(hwnd, txt_buf, 512)
+                    if self._caption in txt_buf.value:
+                        found.append(hwnd)
+                        return False
+                return True
+
+            cb = self.WNDENUMPROC(on_top)
+            self.user32.EnumWindows(cb, 0)
+            if found:
+                hwnd_opus = found[0]
+                break
+            self._pump_messages()
+            time.sleep(0.05)
+
+        if not hwnd_opus:
+            raise RuntimeError(
+                "Could not locate the MS Word (OpusApp) window handle."
+            )
+
+        hwnd_wwg = None
+        for _ in range(40):
+            candidates = []
+
+            def on_child(hwnd, _lparam):
+                self.user32.GetClassNameW(hwnd, cls_buf, 256)
+                if cls_buf.value == "_WwG" and self.user32.IsWindowVisible(hwnd):
+                    r = self.wintypes.RECT()
+                    self.user32.GetClientRect(hwnd, ctypes.byref(r))
+                    area = int(r.right - r.left) * int(r.bottom - r.top)
+                    candidates.append((area, hwnd))
+                return True
+
+            cb = self.WNDENUMPROC(on_child)
+            self.user32.EnumChildWindows(hwnd_opus, cb, 0)
+            if candidates:
+                candidates.sort(reverse=True)
+                hwnd_wwg = candidates[0][1]
+                break
+            self._pump_messages()
+            time.sleep(0.05)
+
+        if not hwnd_wwg:
+            raise RuntimeError(
+                "Could not locate the MS Word document canvas (_WwG)."
+            )
+
+        return hwnd_opus, hwnd_wwg
+
+    def _get_range_rect(self, rng):
+        win32com = self.win32com
+        pythoncom = self.pythoncom
+
+        # 1. Pure dynamic IDispatch (no typelib): accepts VT_BYREF|VT_I4 VARIANTs.
+        try:
+            left = win32com.client.VARIANT(
+                pythoncom.VT_BYREF | pythoncom.VT_I4, 0
+            )
+            top = win32com.client.VARIANT(
+                pythoncom.VT_BYREF | pythoncom.VT_I4, 0
+            )
+            width = win32com.client.VARIANT(
+                pythoncom.VT_BYREF | pythoncom.VT_I4, 0
+            )
+            height = win32com.client.VARIANT(
+                pythoncom.VT_BYREF | pythoncom.VT_I4, 0
+            )
+            res = self.win.GetPoint(left, top, width, height, rng)
+            if isinstance(res, tuple) and len(res) == 4:
+                return tuple(int(v) for v in res)
+            return (
+                int(left.value),
+                int(top.value),
+                int(width.value),
+                int(height.value),
+            )
+        except TypeError:
+            pass
+
+        # 2. LazyDispatchItem / makepy with 5 args (long* params take ints,
+        #    returns a 4-tuple).
+        try:
+            res = self.win.GetPoint(0, 0, 0, 0, rng)
+            if isinstance(res, tuple) and len(res) == 4:
+                return tuple(int(v) for v in res)
+        except TypeError:
+            pass
+
+        # 3. makepy with strict [out]-only params (takes 1 arg, returns 4-tuple).
+        res = self.win.GetPoint(rng)
+        if isinstance(res, tuple) and len(res) == 4:
+            return tuple(int(v) for v in res)
+        raise RuntimeError(f"Unexpected Window.GetPoint result: {res!r}")
+
+    def _capture_window_rgb(self):
+        ctypes = self.ctypes
+        wintypes = self.wintypes
+
+        if self.user32.IsIconic(self.hwnd_opus):
+            # SW_SHOWNOACTIVATE = 4
+            self.user32.ShowWindow(self.hwnd_opus, 4)
+            self._pump_messages()
+
+        win_rect = wintypes.RECT()
+        if not self.user32.GetWindowRect(
+            self.hwnd_opus, ctypes.byref(win_rect)
+        ):
+            raise RuntimeError("GetWindowRect failed for MS Word")
+
+        win_l = int(win_rect.left)
+        win_t = int(win_rect.top)
+        win_w = int(win_rect.right - win_rect.left)
+        win_h = int(win_rect.bottom - win_rect.top)
+        if win_w <= 0 or win_h <= 0:
+            raise RuntimeError(f"Invalid MS Word window size: {win_w}x{win_h}")
+
+        client_rect = wintypes.RECT()
+        self.user32.GetClientRect(self.hwnd_wwg, ctypes.byref(client_rect))
+        pt = wintypes.POINT(0, 0)
+        self.user32.ClientToScreen(self.hwnd_wwg, ctypes.byref(pt))
+
+        wwg_x0 = int(pt.x) - win_l
+        wwg_y0 = int(pt.y) - win_t
+        wwg_x1 = wwg_x0 + int(client_rect.right)
+        wwg_y1 = wwg_y0 + int(client_rect.bottom)
+
+        screen_dc = self.user32.GetDC(None)
+        if not screen_dc:
+            raise RuntimeError("GetDC(None) failed")
+
+        mem_dc = None
+        hbmp = None
+        old_obj = None
+        try:
+            mem_dc = self.gdi32.CreateCompatibleDC(screen_dc)
+            if not mem_dc:
+                raise RuntimeError("CreateCompatibleDC failed")
+
+            bmi = self.BITMAPINFO()
+            bmi.bmiHeader.biSize = ctypes.sizeof(self.BITMAPINFOHEADER)
+            bmi.bmiHeader.biWidth = win_w
+            bmi.bmiHeader.biHeight = -win_h  # top-down DIB
+            bmi.bmiHeader.biPlanes = 1
+            bmi.bmiHeader.biBitCount = 32
+            bmi.bmiHeader.biCompression = 0  # BI_RGB
+
+            bits = ctypes.c_void_p()
+            hbmp = self.gdi32.CreateDIBSection(
+                screen_dc,
+                ctypes.byref(bmi),
+                0,  # DIB_RGB_COLORS
+                ctypes.byref(bits),
+                None,
+                0,
+            )
+            if not hbmp or not bits.value:
+                raise RuntimeError("CreateDIBSection failed")
+
+            old_obj = self.gdi32.SelectObject(mem_dc, hbmp)
+
+            # PW_RENDERFULLCONTENT = 2
+            ok = self.user32.PrintWindow(self.hwnd_opus, mem_dc, 2)
+            if not ok:
+                raise RuntimeError(
+                    "PrintWindow failed for MS Word (PW_RENDERFULLCONTENT)"
+                )
+
+            raw = ctypes.string_at(bits.value, win_w * win_h * 4)
+            bgra = np.frombuffer(raw, dtype=np.uint8).reshape((win_h, win_w, 4))
+            rgb = bgra[:, :, [2, 1, 0]].copy()
+        finally:
+            if old_obj is not None and mem_dc is not None:
+                self.gdi32.SelectObject(mem_dc, old_obj)
+            if hbmp is not None:
+                self.gdi32.DeleteObject(hbmp)
+            if mem_dc is not None:
+                self.gdi32.DeleteDC(mem_dc)
+            self.user32.ReleaseDC(None, screen_dc)
+
+        return rgb, win_l, win_t, (wwg_x0, wwg_y0, wwg_x1, wwg_y1)
+
+    def render_batch(self, texts):
+        if not texts:
+            return []
+
+        if len(texts) > self.max_batch:
+            out = []
+            for start in range(0, len(texts), self.max_batch):
+                out.extend(self.render_batch(texts[start:start + self.max_batch]))
+            return out
+
+        for text in texts:
+            if not text or any(ch in text for ch in ("\r", "\n", "\x0b", "\x0c")):
+                raise ValueError(
+                    f"WordRenderer expects non-empty single-line text: {text!r}"
+                )
+
+        # Two trailing paragraph breaks put the dummy '.' line (and cursor /
+        # Copilot margin icon) comfortably below all rendered lines.
+        self.doc.Content.Text = "\r".join(texts) + "\r\r."
+
+        rng = self.doc.Content
+        rng.NoProofing = True
+        rng.Font.Name = "Times New Roman"
+        rng.Font.NameAscii = "Times New Roman"
+        rng.Font.NameOther = "Times New Roman"
+        rng.Font.Bold = False
+        rng.Font.Italic = False
+        rng.Font.Underline = 0  # wdUnderlineNone
+        rng.Font.Size = self.font_size_pt
+
+        pf = rng.ParagraphFormat
+        pf.SpaceBefore = 0
+        pf.SpaceAfter = self.space_after_pt
+        pf.LineSpacingRule = 0  # wdLineSpaceSingle
+        pf.FirstLineIndent = 0
+        pf.LeftIndent = 0
+
+        line_ranges = []
+        for idx in range(len(texts)):
+            para = self.doc.Paragraphs(idx + 1)
+            shade = random.randint(0, 100)
+            color = shade | (shade << 8) | (shade << 16)
+
+            p_rng = self.doc.Range(para.Range.Start, para.Range.End - 1)
+            p_rng.Font.Color = color
+            para.LeftIndent = random.uniform(0.0, 2.0)
+            para.SpaceBefore = random.uniform(0.0, 1.5)
+            line_ranges.append(p_rng)
+
+        # Park the selection/caret on the trailing dummy paragraph.
+        last_para = self.doc.Paragraphs(len(texts) + 2)
+        self.app.Selection.SetRange(
+            last_para.Range.End - 1,
+            last_para.Range.End - 1,
+        )
+        self.win.ScrollIntoView(line_ranges[0], True)
+        self.win.ActivePane.VerticalPercentScrolled = 0
+        try:
+            self.win.ActivePane.HorizontalPercentScrolled = 0
+        except Exception:
+            pass
+
+        rects = None
+        last_exc = None
+        last_candidate = None
+        for _ in range(60):
+            self.app.ScreenRefresh()
+            self.user32.UpdateWindow(self.hwnd_wwg)
+            self._pump_messages()
+            try:
+                candidate = [self._get_range_rect(r) for r in line_ranges]
+                last_candidate = candidate
+                last_exc = None
+                if all(w > 0 and h > 0 for _, _, w, h in candidate):
+                    rects = candidate
+                    break
+            except Exception as exc:
+                last_exc = exc
+            time.sleep(0.03)
+
+        if rects is None:
+            detail = (
+                f"last error: {last_exc!r}"
+                if last_exc is not None
+                else f"last rects: {last_candidate!r}"
+            )
+            raise RuntimeError(
+                f"Timed out waiting for MS Word to lay out paragraphs ({detail})."
+            )
+
+        max_expected_h = max(36, int(round(self.font_size_px * 2.4)))
+        for idx, (_, _, _, h) in enumerate(rects):
+            if h > max_expected_h:
+                raise ValueError(
+                    f"Word line {idx} wrapped or exceeded single-line height "
+                    f"({h}px > {max_expected_h}px): {texts[idx]!r}"
+                )
+
+        # Allow DirectWrite/ClearType paint to settle before PrintWindow.
+        time.sleep(0.03)
+
+        for attempt in range(6):
+            self.app.ScreenRefresh()
+            self.user32.UpdateWindow(self.hwnd_opus)
+            self._pump_messages()
+
+            rgb, win_l, win_t, (wwg_x0, wwg_y0, wwg_x1, wwg_y1) = (
+                self._capture_window_rgb()
+            )
+
+            win_boxes = [
+                (sx - win_l, sy - win_t, sx - win_l + sw, sy - win_t + sh)
+                for sx, sy, sw, sh in rects
+            ]
+
+            crops = []
+            all_have_ink = True
+            for i, (x0, y0, x1, y1) in enumerate(win_boxes):
+                min_y = wwg_y0
+                if i > 0:
+                    prev_y1 = win_boxes[i - 1][3]
+                    min_y = max(min_y, (prev_y1 + y0) // 2)
+
+                max_y = wwg_y1
+                if i + 1 < len(win_boxes):
+                    next_y0 = win_boxes[i + 1][1]
+                    max_y = min(max_y, (y1 + next_y0) // 2)
+
+                cx0 = max(wwg_x0, x0 - 8)
+                cy0 = max(min_y, y0 - 4)
+                cx1 = min(wwg_x1, x1 + 8)
+                cy1 = min(max_y, y1 + 4)
+
+                if cx1 <= cx0 or cy1 <= cy0:
+                    all_have_ink = False
+                    break
+
+                patch = rgb[cy0:cy1, cx0:cx1]
+                if patch.size == 0 or int(patch.min()) >= 245:
+                    all_have_ink = False
+                    break
+
+                crops.append(Image.fromarray(patch).convert("RGB"))
+
+            if all_have_ink and len(crops) == len(texts):
+                return crops
+
+            if attempt < 5:
+                time.sleep(0.04)
+
+        raise RuntimeError(
+            "MS Word PrintWindow capture produced blank or missing text crops. "
+            "Ensure Word is running on an active desktop session."
+        )
+
+    def render(self, text):
+        return self.render_batch([text])[0]
+
+    def close(self):
+        if self.doc is not None:
+            try:
+                self.doc.Close(SaveChanges=0)
+            except Exception:
+                pass
+            self.doc = None
+
+        if self.app is not None:
+            try:
+                opts = self.app.Options
+                for opt_name, orig_val in self._saved_options.items():
+                    try:
+                        setattr(opts, opt_name, orig_val)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            try:
+                self.app.Quit(SaveChanges=0)
+            except Exception:
+                pass
+            self.app = None
+
+        self.win = None
+        if getattr(self, "_com_initialized", False):
+            try:
+                self.pythoncom.CoUninitialize()
+            except Exception:
+                pass
+            self._com_initialized = False
+
+
 class SyntheticRenderer:
     """
-    Render using explicit font files with either PIL or Skia.
+    Render using explicit font files with PIL/Skia, and/or MS Word
+    (Times New Roman only) on Windows.
 
     In mixed mode:
-        P(PIL)  = 0.5
-        P(Skia) = 0.5
+        P(PIL)  = 1/3
+        P(Skia) = 1/3
+        P(Word) = 1/3
 
-    Within either renderer, each loaded font has equal probability.
-
-    Skia typefaces are loaded from the actual font files, rather than from
-    a single system font family.
+    Within PIL or Skia, each loaded font has equal probability.
+    MS Word always uses Times New Roman only (no variants).
     """
 
     def __init__(self, args):
         self.args = args
         self.fonts = []
         self.skia = None
+        self.word = None
 
         if args.renderer in {"skia", "mixed"}:
             try:
                 import skia
             except ImportError as exc:
                 raise RuntimeError(
-                    "Install skia-python or use --renderer pil"
+                    "Install skia-python or use --renderer pil/word"
                 ) from exc
 
             self.skia = skia
 
-        candidates = args.font or DEFAULT_FONTS
-        explicit_fonts = bool(args.font)
-        seen_paths = set()
+        if args.renderer in {"pil", "skia", "mixed"}:
+            candidates = args.font or DEFAULT_FONTS
+            explicit_fonts = bool(args.font)
+            seen_paths = set()
 
-        for requested_path in candidates:
-            # Pillow also resolves names such as "times.ttf" through its
-            # normal platform-specific font lookup.
-            try:
-                pil_font = ImageFont.truetype(
-                    requested_path,
-                    args.font_size,
-                )
-            except OSError as exc:
-                if explicit_fonts:
+            for requested_path in candidates:
+                # Pillow also resolves names such as "times.ttf" through its
+                # normal platform-specific font lookup.
+                try:
+                    pil_font = ImageFont.truetype(
+                        requested_path,
+                        args.font_size,
+                    )
+                except OSError as exc:
+                    if explicit_fonts:
+                        raise RuntimeError(
+                            f"Could not load requested font: {requested_path}"
+                        ) from exc
+
+                    eprint(
+                        f"Skipping unavailable default font: {requested_path}"
+                    )
+                    continue
+
+                resolved_path = Path(
+                    os.fsdecode(pil_font.path)
+                ).resolve()
+
+                if not resolved_path.is_file():
                     raise RuntimeError(
-                        f"Could not load requested font: {requested_path}"
-                    ) from exc
-
-                eprint(
-                    f"Skipping unavailable default font: {requested_path}"
-                )
-                continue
-
-            resolved_path = Path(
-                os.fsdecode(pil_font.path)
-            ).resolve()
-
-            if not resolved_path.is_file():
-                raise RuntimeError(
-                    "Font did not resolve to a readable file: "
-                    f"{resolved_path}"
-                )
-
-            # normcase handles case-insensitive Windows paths.
-            path_key = os.path.normcase(str(resolved_path))
-
-            if path_key in seen_paths:
-                continue
-
-            family, style = pil_font.getname()
-            skia_font = None
-            skia_family = None
-
-            if self.skia is not None:
-                typeface = self.skia.Typeface.MakeFromFile(
-                    str(resolved_path)
-                )
-
-                if typeface is None:
-                    raise RuntimeError(
-                        "Skia could not load font file: "
+                        "Font did not resolve to a readable file: "
                         f"{resolved_path}"
                     )
 
-                skia_font = self.skia.Font(
-                    typeface,
-                    args.font_size,
+                # normcase handles case-insensitive Windows paths.
+                path_key = os.path.normcase(str(resolved_path))
+
+                if path_key in seen_paths:
+                    continue
+
+                family, style = pil_font.getname()
+                skia_font = None
+                skia_family = None
+
+                if self.skia is not None:
+                    typeface = self.skia.Typeface.MakeFromFile(
+                        str(resolved_path)
+                    )
+
+                    if typeface is None:
+                        raise RuntimeError(
+                            "Skia could not load font file: "
+                            f"{resolved_path}"
+                        )
+
+                    skia_font = self.skia.Font(
+                        typeface,
+                        args.font_size,
+                    )
+                    skia_font.setSubpixel(True)
+                    skia_font.setEdging(
+                        self.skia.Font.Edging.kSubpixelAntiAlias
+                    )
+
+                    skia_family = typeface.getFamilyName()
+
+                self.fonts.append({
+                    "path": str(resolved_path),
+                    "family": family,
+                    "style": style,
+                    "pil": pil_font,
+                    "skia": skia_font,
+                })
+                seen_paths.add(path_key)
+
+                eprint(
+                    f"Loaded font {len(self.fonts)}: "
+                    f"{family} / {style}\n"
+                    f"  {resolved_path}"
                 )
-                skia_font.setSubpixel(True)
-                skia_font.setEdging(
-                    self.skia.Font.Edging.kSubpixelAntiAlias
+
+                if skia_family is not None:
+                    eprint(f"  Skia family: {skia_family}")
+
+            if not self.fonts:
+                raise RuntimeError(
+                    "No font files loaded. Supply one or more --font PATH "
+                    "options. Explicit font files are now required for both "
+                    "the PIL and Skia rendering paths."
                 )
 
-                skia_family = typeface.getFamilyName()
-
-            self.fonts.append({
-                "path": str(resolved_path),
-                "family": family,
-                "style": style,
-                "pil": pil_font,
-                "skia": skia_font,
-            })
-            seen_paths.add(path_key)
-
+        if args.renderer in {"word", "mixed"}:
+            self.word = WordRenderer(args.font_size)
             eprint(
-                f"Loaded font {len(self.fonts)}: "
-                f"{family} / {style}\n"
-                f"  {resolved_path}"
-            )
-
-            if skia_family is not None:
-                eprint(f"  Skia family: {skia_family}")
-
-        if not self.fonts:
-            raise RuntimeError(
-                "No font files loaded. Supply one or more --font PATH "
-                "options. Explicit font files are now required for both "
-                "the PIL and Skia rendering paths."
+                f"Loaded Word renderer: Times New Roman "
+                f"({self.word.font_size_pt:.2f}pt @ {self.word.dpi} DPI; "
+                f"batch={self.word.max_batch})"
             )
 
         if args.renderer == "mixed":
             eprint(
-                f"Generator: {len(self.fonts)} fonts × 2 renderers; "
-                "equal renderer/font sampling."
+                f"Generator: {len(self.fonts)} fonts × 2 renderers (PIL, Skia) "
+                "+ MS Word (Times New Roman); equal engine sampling."
             )
+        elif args.renderer == "word":
+            eprint("Generator: MS Word with Times New Roman only.")
         else:
             eprint(
                 f"Generator: {len(self.fonts)} fonts with "
                 f"{args.renderer}; equal font sampling."
             )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+    def close(self):
+        if self.word is not None:
+            self.word.close()
+            self.word = None
+
+    def choose_engine(self):
+        if self.args.renderer == "mixed":
+            return random.choice(("pil", "skia", "word"))
+        return self.args.renderer
 
     def _position(self, text, advance, width, height, is_skia):
         """
@@ -1943,13 +2676,11 @@ class SyntheticRenderer:
 
         return x, y
 
-    def render(self, text):
-        engine = self.args.renderer
+    def render_with_engine(self, text, engine):
+        if engine == "word":
+            return self.word.render(text)
 
-        if engine == "mixed":
-            engine = random.choice(("pil", "skia"))
-
-        # The same font pool is used by both engines.
+        # The same font pool is used by both PIL and Skia.
         entry = random.choice(self.fonts)
 
         width, height = 800, 64
@@ -2018,39 +2749,70 @@ class SyntheticRenderer:
 
         return image
 
+    def render_word_batch(self, texts):
+        return self.word.render_batch(texts)
+
+    def render(self, text):
+        return self.render_with_engine(text, self.choose_engine())
+
 
 def generate(args):
-    renderer = SyntheticRenderer(args)
+    with SyntheticRenderer(args) as renderer:
+        chunk_size = 64
 
-    for split, count in (
-        ("train", args.train_count),
-        ("val", args.val_count),
-    ):
-        split_dir = Path(args.data) / split
-        image_dir = split_dir / "images"
-        image_dir.mkdir(parents=True, exist_ok=True)
+        for split, count in (
+            ("train", args.train_count),
+            ("val", args.val_count),
+        ):
+            split_dir = Path(args.data) / split
+            image_dir = split_dir / "images"
+            image_dir.mkdir(parents=True, exist_ok=True)
 
-        manifest = split_dir / "labels.jsonl"
-        eprint(f"Generating {count} {split} samples")
+            manifest = split_dir / "labels.jsonl"
+            eprint(f"Generating {count} {split} samples")
 
-        with manifest.open("w", encoding="utf-8") as f:
-            for index in range(count):
-                # text = random_text()
-                text = random_text()
-                image = renderer.render(text)
+            with manifest.open("w", encoding="utf-8") as f:
+                for start in range(0, count, chunk_size):
+                    end = min(count, start + chunk_size)
+                    chunk_len = end - start
 
-                filename = f"{split}_{index:06d}.png"
-                image.save(image_dir / filename)
+                    texts = [None] * chunk_len
+                    images = [None] * chunk_len
+                    word_positions = []
+                    word_texts = []
 
-                f.write(json.dumps({
-                    "image": f"images/{filename}",
-                    "text": text,
-                }) + "\n")
+                    for offset in range(chunk_len):
+                        text = random_text()
+                        texts[offset] = text
+                        engine = renderer.choose_engine()
 
-                if (index + 1) % 1000 == 0:
-                    eprint(f"  {index + 1}/{count}")
+                        if engine == "word":
+                            word_positions.append(offset)
+                            word_texts.append(text)
+                        else:
+                            images[offset] = renderer.render_with_engine(
+                                text, engine
+                            )
 
-        eprint(f"Wrote {manifest}")
+                    if word_texts:
+                        word_images = renderer.render_word_batch(word_texts)
+                        for offset, img in zip(word_positions, word_images):
+                            images[offset] = img
+
+                    for offset in range(chunk_len):
+                        index = start + offset
+                        filename = f"{split}_{index:06d}.png"
+                        images[offset].save(image_dir / filename)
+
+                        f.write(json.dumps({
+                            "image": f"images/{filename}",
+                            "text": texts[offset],
+                        }) + "\n")
+
+                        if (index + 1) % 1000 == 0:
+                            eprint(f"  {index + 1}/{count}")
+
+            eprint(f"Wrote {manifest}")
 
 
 # ---------------------------------------------------------------------------
@@ -2097,7 +2859,7 @@ def parse_args():
 
     parser.add_argument(
         "--renderer",
-        choices=["skia", "pil", "mixed"],
+        choices=["skia", "pil", "word", "mixed"],
         default="mixed",
     )
     parser.add_argument("--font", action="append")
@@ -2127,7 +2889,7 @@ def parse_args():
         "--beam-width",
         type=int,
         default=10,
-            help="CTC prefix beam search width (default: 10)",
+        help="CTC prefix beam search width (default: 10)",
     )
 
     args = parser.parse_args()
@@ -2160,8 +2922,8 @@ def main():
     if args.generate:
         generate(args)
     elif args.sample is not None:
-        renderer = SyntheticRenderer(args)
-        renderer.render(args.sample).save("sample.png")
+        with SyntheticRenderer(args) as renderer:
+            renderer.render(args.sample).save("sample.png")
         eprint("Wrote sample.png")
     elif args.train:
         train(args)
@@ -2169,6 +2931,7 @@ def main():
         validate(args)
     elif args.predict:
         predict(args)
+
 
 def _start_windows_parent_watchdog():
     if sys.platform != "win32":
@@ -2239,6 +3002,7 @@ def _start_windows_parent_watchdog():
         os._exit(130)
 
     threading.Thread(target=watch, daemon=True).start()
+
 
 if __name__ == "__main__":
     try:
