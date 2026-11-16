@@ -556,7 +556,7 @@ class CRNN(nn.Module):
         # Vertical stride: 16.
         self.cnn = nn.Sequential(
             block(1, 32),
-            nn.MaxPool2d((2, 2)),
+            nn.MaxPool2d((2, 1)),
             block(32, 64),
             nn.MaxPool2d((2, 1)),
             block(64, 128),
@@ -593,7 +593,7 @@ class CRNN(nn.Module):
             .view(b, t, c * h)
         )
 
-        lengths = widths.cpu() // 2
+        lengths = widths.cpu()
 
         # Packing prevents right-padding from changing the backward LSTM's
         # interpretation of the real line.
