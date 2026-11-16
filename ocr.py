@@ -1334,9 +1334,10 @@ def train(args):
         model.train()
 
         # Preserve the checkpoint's running normalization statistics.
-        for layer in model.modules():
-            if isinstance(layer, nn.BatchNorm2d):
-                layer.eval()
+        if args.model:
+            for layer in model.modules():
+                if isinstance(layer, nn.BatchNorm2d):
+                    layer.eval()
 
         accumulated_loss = 0.0
         seen = 0
