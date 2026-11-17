@@ -1,7 +1,7 @@
 [project]
-name = "cour"
+name = "epstein-ocr"
 version = "0.1.0"
-description = "Add your description here"
+description = "Various ML approaches to OCR of the Epstein Files"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
