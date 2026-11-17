@@ -12,3 +12,4 @@ page-*.txt
 runs/
 target/
 weights
+__pycache__/
