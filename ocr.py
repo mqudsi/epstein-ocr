@@ -2633,7 +2633,10 @@ class SyntheticRenderer:
 
     def choose_engine(self):
         if self.args.renderer == "mixed":
-            return random.choice(("pil", "skia", "word"))
+            choices = ("pil", "skia")
+            if sys.platform == "win32":
+                choices += ("word",)
+            return random.choice(choices)
         return self.args.renderer
 
     def _position(self, text, advance, width, height, is_skia):
